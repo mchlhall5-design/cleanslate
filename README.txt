@@ -18,3 +18,13 @@ What changed:
 
 Important:
 Mobile Chrome on iPhone uses the same Apple WebKit engine as Safari, so the fix is chunked scanning/resume storage, not simply changing browsers.
+
+
+V8 added:
+- Delete Emails From Selected Senders
+- Archive Emails From Selected Senders
+- Resume Saved Cleanup
+- Pause Cleanup
+- Uses Gmail batchModify in chunks
+- DELETE means move to Gmail Trash, not permanent erase
+- Safe/protected senders are excluded from delete/archive actions

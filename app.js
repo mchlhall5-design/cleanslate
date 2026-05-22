@@ -286,6 +286,117 @@ async function sendMailtoUnsub(mailto){
   if(!res.ok) throw new Error(await res.text());
 }
 
+
+function gmailSearchQueryForSender(s){
+  const email = (s.email || "").trim();
+  const domain = (s.domain || "").trim();
+  if(email && email.includes("@")) return `from:${email}`;
+  if(domain) return `from:${domain}`;
+  return "";
+}
+
+async function listMessageIdsForQuery(q, pageToken=""){
+  const pt = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+  const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=500&q=${encodeURIComponent(q)}${pt}`;
+  return gmailFetch(url);
+}
+
+async function gmailBatchModify(ids, addLabels=[], removeLabels=[]){
+  if(!ids.length) return;
+  const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",{
+    method:"POST",
+    headers:{...authHeaders(),"Content-Type":"application/json"},
+    body:JSON.stringify({ids, addLabelIds:addLabels, removeLabelIds:removeLabels})
+  });
+  if(!res.ok) throw new Error(await res.text());
+}
+
+async function saveCleanupState(st){
+  localStorage.setItem("cs_cleanup_state", JSON.stringify(st));
+  await dbPut("state",{key:"cleanup",...st});
+}
+function loadCleanupState(){
+  try{return JSON.parse(localStorage.getItem("cs_cleanup_state")||"{}")}catch{return {}}
+}
+let cleanupPaused = false;
+let cleanupRunning = false;
+
+async function runSenderEmailCleanup(action="trash", resume=false){
+  if(cleanupRunning) return;
+  if(!accessToken){ setStatus("cleanupStatus","Connect Gmail first."); return; }
+  cleanupPaused=false;
+  cleanupRunning=true;
+  try{
+    const senders = await dbAll("senders");
+    let st = resume ? loadCleanupState() : {};
+    if(!st || !st.targets || !resume){
+      const targets = senders.filter(s=>selected.has(s.key) && s.bucket !== "safe").map(s=>({
+        key:s.key,
+        name:s.name,
+        email:s.email,
+        domain:s.domain,
+        q:gmailSearchQueryForSender(s),
+        nextPageToken:"",
+        done:false,
+        processed:0
+      })).filter(t=>t.q);
+      st = {action, targetIndex:0, targets, totalProcessed:0, startedAt:Date.now(), done:false};
+      await saveCleanupState(st);
+    }
+    if(!st.targets || !st.targets.length){
+      setStatus("cleanupStatus","No selected non-safe senders found. Select spam/newsletter senders first.");
+      cleanupRunning=false;
+      return;
+    }
+    st.action = action || st.action || "trash";
+
+    for(let i=st.targetIndex || 0; i<st.targets.length; i++){
+      if(cleanupPaused) break;
+      const t = st.targets[i];
+      if(t.done) continue;
+      st.targetIndex=i;
+      setStatus("cleanupStatus",`${st.action === "archive" ? "Archiving" : "Deleting"} sender ${i+1}/${st.targets.length}\n${t.name || t.email || t.domain}\nProcessed so far: ${st.totalProcessed||0}`);
+      let keepGoing=true;
+      while(keepGoing && !cleanupPaused){
+        const page = await listMessageIdsForQuery(t.q, t.nextPageToken || "");
+        const ids = (page.messages||[]).map(m=>m.id);
+        if(ids.length){
+          if(st.action === "archive"){
+            await gmailBatchModify(ids, [], ["INBOX"]);
+          }else{
+            await gmailBatchModify(ids, ["TRASH"], []);
+          }
+          t.processed = (t.processed||0) + ids.length;
+          st.totalProcessed = (st.totalProcessed||0) + ids.length;
+          await saveCleanupState(st);
+          setStatus("cleanupStatus",`${st.action === "archive" ? "Archived" : "Moved to Trash"} ${st.totalProcessed} emails\nCurrent sender: ${t.name || t.email || t.domain}\nThis sender: ${t.processed}`);
+          await sleep(350);
+        }
+        t.nextPageToken = page.nextPageToken || "";
+        await saveCleanupState(st);
+        keepGoing = !!t.nextPageToken;
+        if(ids.length === 0 && !t.nextPageToken) keepGoing=false;
+      }
+      if(!cleanupPaused){
+        t.done=true;
+        await saveCleanupState(st);
+      }
+    }
+    if(cleanupPaused){
+      setStatus("cleanupStatus",`Paused safely. Saved after ${st.totalProcessed||0} emails. Tap Resume Saved Cleanup.`);
+    }else{
+      st.done=true;
+      await saveCleanupState(st);
+      setStatus("cleanupStatus",`Cleanup complete.\nAction: ${st.action === "archive" ? "Archived" : "Moved to Trash"}\nEmails processed: ${st.totalProcessed||0}\nSenders processed: ${st.targets.length}`);
+    }
+  }catch(e){
+    setStatus("cleanupStatus",`Cleanup stopped safely. Progress saved.\n${e.message}\nTap Resume Saved Cleanup.`);
+  }finally{
+    cleanupRunning=false;
+  }
+}
+
+
 async function autoUnsubscribeSelected(){
   if(!accessToken){ setStatus("unsubStatus","Connect Gmail first."); return; }
   const senders = await dbAll("senders");
@@ -325,6 +436,10 @@ $("resetScanBtn").addEventListener("click",dbClearAll);
 $("selectAllUnsafeBtn").addEventListener("click",selectAllUnsafe);
 $("clearSelectedBtn").addEventListener("click",()=>{selected.clear();renderSenderList(true);});
 $("refreshListBtn").addEventListener("click",()=>renderSenderList(true));
+$("deleteSelectedEmailsBtn").addEventListener("click",()=>runSenderEmailCleanup("trash",false));
+$("archiveSelectedEmailsBtn").addEventListener("click",()=>runSenderEmailCleanup("archive",false));
+$("resumeCleanupBtn").addEventListener("click",()=>{ const st=loadCleanupState(); runSenderEmailCleanup(st.action || "trash", true); });
+$("pauseCleanupBtn").addEventListener("click",()=>{ cleanupPaused=true; setStatus("cleanupStatus","Pausing after current batch saves..."); });
 $("unsubscribeBtn").addEventListener("click",autoUnsubscribeSelected);
 
 updateAuthUI();

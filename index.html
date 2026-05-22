@@ -7,15 +7,15 @@
   <link rel="manifest" href="manifest.json"/>
   <link rel="stylesheet" href="styles.css"/>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="config.js?v=7"></script>
+  <script src="config.js?v=8"></script>
 </head>
 <body>
   <main class="app">
     <section class="hero">
       <div>
         <p class="eyebrow">CleanSlate</p>
-        <h1>V7 Resumable Full Mailbox Scan</h1>
-        <p class="sub">Scans your Gmail in chunks, saves progress, and resumes if Chrome/Safari closes or freezes.</p>
+        <h1>V8 Delete Spam + Batch Cleanup</h1>
+        <p class="sub">Scans in chunks, saves progress, unsubscribes selected senders, and can delete/archive old emails from spam senders in safe batches.</p>
       </div>
       <div class="badge" id="authBadge">Not connected</div>
     </section>
@@ -63,13 +63,25 @@
       <div id="senderList" class="senderList"></div>
     </section>
 
+
     <section class="panel">
-      <h2>4. Auto-Unsubscribe Selected</h2>
+      <h2>4. Delete / Archive Existing Emails</h2>
+      <p class="muted">Use this after selecting spam/newsletter senders. Delete moves matching sender emails to Gmail Trash. Archive removes them from Inbox but keeps them searchable.</p>
+      <div class="row">
+        <button id="deleteSelectedEmailsBtn" class="danger">Delete Emails From Selected Senders</button>
+        <button id="archiveSelectedEmailsBtn" class="warning">Archive Emails From Selected Senders</button>
+        <button id="resumeCleanupBtn" class="primary">Resume Saved Cleanup</button>
+        <button id="pauseCleanupBtn" class="ghost">Pause Cleanup</button>
+      </div>
+      <div id="cleanupStatus" class="status"></div>
+    </section>
+    <section class="panel">
+      <h2>5. Auto-Unsubscribe Selected</h2>
       <p class="muted">Auto-unsubscribe attempts Gmail List-Unsubscribe methods. CAPTCHA/login/SMS pages are marked Needs Manual instead of pretending they worked.</p>
       <button id="unsubscribeBtn" class="danger wide">Auto-Unsubscribe Selected</button>
       <div id="unsubStatus" class="status"></div>
     </section>
   </main>
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>
