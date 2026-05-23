@@ -137,7 +137,8 @@ async function loadScanState() {
   const snap = await getDoc(doc(db, "users", user.uid, "state", "scan"));
   const state = snap.exists() ? snap.data() : {};
   $("emailCount").textContent = `${state.total || 0} scanned`;
-  $("pageCount").textContent = `${state.pages || 0} pages`;
+  const pageCounter = $("pageCount");
+  if (pageCounter) pageCounter.textContent = `${state.pages || 0} pages`;
   $("progressFill").style.width = state.done ? "100%" : `${Math.min(98, ((state.pages || 0) % 50) * 2)}%`;
   setStatus("scanStatus", `Server scan state:\nTotal scanned: ${state.total || 0}\nPages: ${state.pages || 0}\nDone: ${state.done ? "yes" : "no"}\nRunning: ${state.running ? "yes" : "no"}\nLast update: ${state.updatedAt || "none"}`);
   return state;
