@@ -1,287 +1,80 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-import {
-  getAuth,
-  GoogleAuthProvider,
-  signInWithPopup,
-  signInWithRedirect,
-  getRedirectResult,
-  signOut,
-  onAuthStateChanged
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
-import {
-  getFirestore,
-  doc,
-  setDoc,
-  getDoc,
-  getDocs,
-  collection,
-  query,
-  orderBy,
-  limit,
-  writeBatch
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+import { getFirestore, doc, setDoc, getDoc, getDocs, collection, query, orderBy, limit, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 const CFG = window.CLEANSATE_CONFIG || {};
 const WORKER_URL = (CFG.WORKER_URL || "https://cleanslate-render-worker.onrender.com").replace(/\/$/, "");
+const app = initializeApp(CFG.FIREBASE);
+const auth = getAuth(app);
+const db = getFirestore(app);
+let user = null, selected = new Set(), senders = {};
+const $ = id => document.getElementById(id);
+const setStatus = (id,msg)=>{ const el=$(id); if(el) el.textContent=msg||""; };
+const esc = v => String(v||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
 
-const firebaseApp = initializeApp(CFG.FIREBASE);
-const auth = getAuth(firebaseApp);
-const db = getFirestore(firebaseApp);
-
-let user = null;
-let selected = new Set();
-let senders = {};
-
-const $ = (id) => document.getElementById(id);
-
-function setStatus(id, msg) {
-  const el = $(id);
-  if (el) el.textContent = msg || "";
-}
-
-function escapeHtml(value) {
-  return String(value || "").replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#039;"
-  }[char]));
-}
-
-function updateAuth() {
-  setStatus("authStatus", `App: ${CFG.APP_VERSION}\nFirebase: ${user ? user.email : "not signed in"}`);
-}
-
-async function firebaseLogin() {
-  const provider = new GoogleAuthProvider();
-  provider.setCustomParameters({ prompt: "select_account" });
-  setStatus("authStatus", "Opening Firebase Google sign-in...");
-  try {
-    await signInWithPopup(auth, provider);
-  } catch (popupError) {
-    setStatus("authStatus", `Popup failed:\n${popupError.message || popupError.code}\nTrying redirect...`);
-    await signInWithRedirect(auth, provider);
-  }
-}
-
-async function handleRedirectResult() {
-  try {
-    await getRedirectResult(auth);
-  } catch (error) {
-    setStatus("authStatus", "Firebase login error:\n" + (error.message || error));
-  }
-}
-
-async function workerFetch(path, options = {}) {
-  const res = await fetch(`${WORKER_URL}${path}`, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    cache: "no-store"
-  });
+async function workerFetch(path, options={}) {
+  const res = await fetch(`${WORKER_URL}${path}`, { ...options, headers: {"Content-Type":"application/json", ...(options.headers||{})}, cache:"no-store" });
   const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = { raw: text }; }
-  if (!res.ok) throw new Error(JSON.stringify(data, null, 2));
+  let data; try { data=JSON.parse(text); } catch { data={raw:text}; }
+  if (!res.ok) throw new Error(JSON.stringify(data,null,2));
   return data;
 }
-
-async function checkWorker() {
-  try {
-    const data = await workerFetch("/status");
-    $("workerState").textContent = `Worker: ${data.hasFirebase && data.hasGoogleOAuth && data.hasUser ? "ready" : "not ready"}`;
-    setStatus("cleanupStatus", `Worker status:\nFirebase: ${data.hasFirebase ? "connected" : "missing"}\nGoogle OAuth: ${data.hasGoogleOAuth ? "connected" : "missing"}\nUser: ${data.hasUser ? "connected" : "missing"}\nScan active: ${data.scanActive ? "yes" : "no"}`);
+function updateAuth(){ setStatus("authStatus", `App: ${CFG.APP_VERSION}\nFirebase: ${user ? user.email : "not signed in"}`); }
+async function firebaseLogin(){
+  const provider=new GoogleAuthProvider(); provider.setCustomParameters({prompt:"select_account"});
+  setStatus("authStatus","Opening Firebase Google sign-in...");
+  try{ await signInWithPopup(auth, provider); }catch(e){ setStatus("authStatus",`Popup failed:\n${e.message||e.code}\nTrying redirect...`); await signInWithRedirect(auth, provider); }
+}
+async function handleRedirectResult(){ try{ await getRedirectResult(auth); }catch(e){ setStatus("authStatus","Firebase login error:\n"+(e.message||e)); } }
+function connectRenderGmail(){
+  if(!user){ setStatus("gmailStatus","Sign in with Firebase first, then connect Gmail to Render."); return; }
+  const returnUrl=location.href.split("#")[0].split("?")[0];
+  location.href = `${WORKER_URL}/oauth/start?uid=${encodeURIComponent(user.uid)}&returnUrl=${encodeURIComponent(returnUrl)}`;
+}
+async function checkWorker(){
+  try{
+    const data=await workerFetch("/status");
+    $("workerState").textContent=`Worker: ${data.hasFirebase && data.hasGoogleClient && data.hasUser ? "ready" : "not ready"}`;
+    setStatus("gmailStatus",`Render worker:\nFirebase: ${data.hasFirebase?"connected":"missing"}\nGoogle OAuth Client: ${data.hasGoogleClient?"connected":"missing"}\nStored Gmail token: ${data.hasStoredGmailToken?"connected":"missing"}\nUser: ${data.hasUser?"connected":"missing"}\nCallback URI: ${data.oauthCallback||""}`);
+    setStatus("cleanupStatus",`Worker status:\nScan active: ${data.scanActive?"yes":"no"}\nCleanup active: ${data.cleanupActive?"yes":"no"}`);
     return data;
-  } catch (error) {
-    $("workerState").textContent = "Worker: unreachable";
-    setStatus("cleanupStatus", "Worker unreachable:\n" + (error.message || error));
-    return null;
-  }
+  }catch(e){ $("workerState").textContent="Worker: unreachable"; setStatus("gmailStatus","Worker unreachable:\n"+(e.message||e)); }
 }
-
-async function startServerScan() {
-  setStatus("scanStatus", "Starting Render background scan...");
-  try {
-    const data = await workerFetch("/scan/start", { method: "POST", body: JSON.stringify({ continueExisting: true }) });
-    setStatus("scanStatus", `Background scan started.\n${JSON.stringify(data, null, 2)}`);
-    await refreshDashboard();
-  } catch (error) {
-    setStatus("scanStatus", "Start scan failed:\n" + (error.message || error));
-  }
+async function startServerScan(){ try{ setStatus("scanStatus","Starting Render background scan..."); const d=await workerFetch("/scan/start",{method:"POST",body:JSON.stringify({continueExisting:true})}); setStatus("scanStatus",`Background scan started.\n${JSON.stringify(d,null,2)}`); await refreshDashboard(); }catch(e){ setStatus("scanStatus","Start scan failed:\n"+(e.message||e)); } }
+async function pauseServerScan(){ try{ const d=await workerFetch("/scan/pause",{method:"POST",body:"{}"}); setStatus("scanStatus",`Background scan pause requested.\n${JSON.stringify(d,null,2)}`); await refreshDashboard(); }catch(e){ setStatus("scanStatus","Pause failed:\n"+(e.message||e)); } }
+async function resetServerScan(){ if(!confirm("Reset scan progress?"))return; try{ const d=await workerFetch("/scan/reset",{method:"POST",body:"{}"}); setStatus("scanStatus",`Scan reset.\n${JSON.stringify(d,null,2)}`); await refreshDashboard(); }catch(e){ setStatus("scanStatus","Reset failed:\n"+(e.message||e)); } }
+async function loadScanState(){
+  if(!user)return;
+  const snap=await getDoc(doc(db,"users",user.uid,"state","scan")); const s=snap.exists()?snap.data():{};
+  $("emailCount").textContent=`${s.total||0} scanned`; $("pageCount").textContent=`${s.pages||0} pages`; $("progressFill").style.width=s.done?"100%":`${Math.min(98,((s.pages||0)%50)*2)}%`;
+  setStatus("scanStatus",`Server scan state:\nTotal scanned: ${s.total||0}\nPages: ${s.pages||0}\nDone: ${s.done?"yes":"no"}\nRunning: ${s.running?"yes":"no"}\nLast update: ${s.updatedAt||"none"}${s.lastError ? "\n\nLast worker error:\n"+s.lastError : ""}`);
 }
-
-async function pauseServerScan() {
-  setStatus("scanStatus", "Pausing Render background scan...");
-  try {
-    const data = await workerFetch("/scan/pause", { method: "POST", body: "{}" });
-    setStatus("scanStatus", `Background scan pause requested.\n${JSON.stringify(data, null, 2)}`);
-    await refreshDashboard();
-  } catch (error) {
-    setStatus("scanStatus", "Pause failed:\n" + (error.message || error));
-  }
+async function loadSenders(){
+  if(!user)return;
+  const snap=await getDocs(query(collection(db,"users",user.uid,"senders"), orderBy("count","desc"), limit(CFG.RENDER_LIMIT||500)));
+  senders={}; snap.forEach(x=>senders[x.id]=x.data()); renderSenders();
 }
-
-async function resetServerScan() {
-  if (!confirm("Reset scan progress? This will restart Gmail scanning from the beginning.")) return;
-  try {
-    const data = await workerFetch("/scan/reset", { method: "POST", body: "{}" });
-    setStatus("scanStatus", `Scan reset.\n${JSON.stringify(data, null, 2)}`);
-    await refreshDashboard();
-  } catch (error) {
-    setStatus("scanStatus", "Reset failed:\n" + (error.message || error));
-  }
+function renderSenders(){
+  const vals=Object.values(senders).sort((a,b)=>({safe:0,cleanup:1,review:2}[a.bucket]??9)-({safe:0,cleanup:1,review:2}[b.bucket]??9)||(b.count||0)-(a.count||0));
+  $("senderCount").textContent=`${vals.length} senders`; $("safeCount").textContent=vals.filter(s=>s.bucket==="safe").length; $("cleanupCount").textContent=vals.filter(s=>s.bucket==="cleanup").length; $("selectedCount").textContent=selected.size;
+  $("senderList").innerHTML=vals.map(s=>`<div class="sender ${s.bucket||"review"}"><input type="checkbox" data-key="${esc(s.key)}" ${selected.has(s.key)?"checked":""} ${s.bucket!=="safe"?"":"disabled"}><div><div class="title">${esc(s.name||s.email||s.domain)}</div><div class="meta">${esc(s.email||s.domain||"")} • ${s.count||0} emails ${s.unsubUrl||s.unsubMailto?"• unsubscribe link":""}</div></div><div class="pill">${s.bucket==="safe"?"KEEP SAFE":s.bucket==="cleanup"?"CLEANUP":"REVIEW"}</div></div>`).join("");
+  document.querySelectorAll("input[data-key]").forEach(cb=>cb.onchange=()=>{ cb.checked?selected.add(cb.dataset.key):selected.delete(cb.dataset.key); $("selectedCount").textContent=selected.size; });
 }
-
-async function loadScanState() {
-  if (!user) return null;
-  const snap = await getDoc(doc(db, "users", user.uid, "state", "scan"));
-  const state = snap.exists() ? snap.data() : {};
-  $("emailCount").textContent = `${state.total || 0} scanned`;
-  const pageCounter = $("pageCount");
-  if (pageCounter) pageCounter.textContent = `${state.pages || 0} pages`;
-  $("progressFill").style.width = state.done ? "100%" : `${Math.min(98, ((state.pages || 0) % 50) * 2)}%`;
-  setStatus("scanStatus", `Server scan state:
-Total scanned: ${state.total || 0}
-Pages: ${state.pages || 0}
-Done: ${state.done ? "yes" : "no"}
-Running: ${state.running ? "yes" : "no"}
-Last update: ${state.updatedAt || "none"}${state.lastError ? "\n\nLast worker error:\n" + state.lastError : ""}`);
-  return state;
+async function saveQueue(){
+  if(!user)return setStatus("cleanupStatus","Sign in first.");
+  const targets=[...selected].map(k=>senders[k]).filter(Boolean);
+  if(!targets.length)return setStatus("cleanupStatus","No senders selected.");
+  for(let i=0;i<targets.length;i+=450){ const batch=writeBatch(db); targets.slice(i,i+450).forEach(s=>batch.set(doc(db,"users",user.uid,"cleanupQueue",s.key),{...s,status:"queued",workerStatus:"queued",action:"unsubscribe_and_delete",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()},{merge:true})); await batch.commit(); }
+  setStatus("cleanupStatus",`Queued ${targets.length} senders. Triggering worker...`); await triggerWorker();
 }
-
-async function loadSenders() {
-  if (!user) return;
-  const snap = await getDocs(query(collection(db, "users", user.uid, "senders"), orderBy("count", "desc"), limit(CFG.RENDER_LIMIT || 500)));
-  senders = {};
-  snap.forEach((item) => {
-    senders[item.id] = item.data();
-  });
-  renderSenders();
+async function triggerWorker(){ try{ const d=await workerFetch("/run-once",{method:"POST",body:"{}"}); setStatus("cleanupStatus",`Worker triggered.\nProcessed: ${d.processed||0}\nSkipped safe: ${d.skippedSafe||0}`);}catch(e){setStatus("cleanupStatus","Worker trigger failed:\n"+(e.message||e));}}
+async function loadQueueStatus(){ if(!user)return; const snap=await getDocs(query(collection(db,"users",user.uid,"cleanupQueue"), limit(1000))); let q=0,p=0,c=0,er=0,sk=0; snap.forEach(d=>{const s=d.data().workerStatus||d.data().status||"queued"; if(s.includes("complete"))c++; else if(s.includes("processing"))p++; else if(s.includes("error"))er++; else if(s.includes("skipped"))sk++; else q++;}); setStatus("cleanupStatus",`Queue:\nQueued: ${q}\nProcessing: ${p}\nComplete: ${c}\nErrors: ${er}\nSkipped safe: ${sk}`);}
+async function refreshDashboard(){ await checkWorker(); await loadScanState(); await loadSenders(); }
+function bind(){
+ $("firebaseLoginBtn").onclick=firebaseLogin; $("logoutBtn").onclick=()=>signOut(auth); $("connectRenderGmailBtn").onclick=connectRenderGmail; $("checkWorkerBtn").onclick=checkWorker;
+ $("startServerScanBtn").onclick=startServerScan; $("pauseServerScanBtn").onclick=pauseServerScan; $("resetServerScanBtn").onclick=resetServerScan; $("refreshBtn").onclick=refreshDashboard;
+ $("selectCleanupBtn").onclick=()=>{Object.values(senders).forEach(s=>{if(s.bucket==="cleanup")selected.add(s.key)});renderSenders();}; $("clearSelectedBtn").onclick=()=>{selected.clear();renderSenders();};
+ $("saveQueueBtn").onclick=saveQueue; $("triggerWorkerBtn").onclick=triggerWorker; $("queueStatusBtn").onclick=loadQueueStatus;
 }
-
-function renderSenders() {
-  const vals = Object.values(senders).sort((a, b) => {
-    const order = { safe: 0, cleanup: 1, review: 2 };
-    return (order[a.bucket] ?? 9) - (order[b.bucket] ?? 9) || (b.count || 0) - (a.count || 0);
-  });
-  $("senderCount").textContent = `${vals.length} senders`;
-  $("safeCount").textContent = vals.filter(s => s.bucket === "safe").length;
-  $("cleanupCount").textContent = vals.filter(s => s.bucket === "cleanup").length;
-  $("selectedCount").textContent = selected.size;
-
-  $("senderList").innerHTML = vals.map((s) => {
-    const canSelect = s.bucket !== "safe";
-    return `<div class="sender ${s.bucket || "review"}">
-      <input type="checkbox" data-key="${escapeHtml(s.key)}" ${selected.has(s.key) ? "checked" : ""} ${canSelect ? "" : "disabled"}>
-      <div>
-        <div class="title">${escapeHtml(s.name || s.email || s.domain)}</div>
-        <div class="meta">${escapeHtml(s.email || s.domain || "")} • ${s.count || 0} emails ${s.unsubUrl || s.unsubMailto ? "• unsubscribe link" : ""}</div>
-      </div>
-      <div class="pill">${s.bucket === "safe" ? "KEEP SAFE" : s.bucket === "cleanup" ? "CLEANUP" : "REVIEW"}</div>
-    </div>`;
-  }).join("");
-
-  document.querySelectorAll("input[data-key]").forEach((checkbox) => {
-    checkbox.onchange = () => {
-      if (checkbox.checked) selected.add(checkbox.dataset.key);
-      else selected.delete(checkbox.dataset.key);
-      $("selectedCount").textContent = selected.size;
-    };
-  });
-}
-
-async function saveQueue() {
-  if (!user) {
-    setStatus("cleanupStatus", "Sign in first.");
-    return;
-  }
-  const targets = [...selected].map(k => senders[k]).filter(Boolean);
-  if (!targets.length) {
-    setStatus("cleanupStatus", "No senders selected.");
-    return;
-  }
-
-  for (let i = 0; i < targets.length; i += 450) {
-    const batch = writeBatch(db);
-    targets.slice(i, i + 450).forEach((s) => {
-      batch.set(doc(db, "users", user.uid, "cleanupQueue", s.key), {
-        ...s,
-        status: "queued",
-        workerStatus: "queued",
-        action: "unsubscribe_and_delete",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-    });
-    await batch.commit();
-  }
-
-  setStatus("cleanupStatus", `Queued ${targets.length} senders. Triggering worker...`);
-  await triggerWorker();
-}
-
-async function triggerWorker() {
-  try {
-    const data = await workerFetch("/run-once", { method: "POST", body: "{}" });
-    setStatus("cleanupStatus", `Worker triggered.\nProcessed: ${data.processed || 0}\nSkipped safe: ${data.skippedSafe || 0}`);
-  } catch (error) {
-    setStatus("cleanupStatus", "Worker trigger failed:\n" + (error.message || error));
-  }
-}
-
-async function loadQueueStatus() {
-  if (!user) return;
-  const snap = await getDocs(query(collection(db, "users", user.uid, "cleanupQueue"), limit(1000)));
-  let queued = 0, processing = 0, complete = 0, errors = 0, skipped = 0;
-  snap.forEach((d) => {
-    const s = d.data().workerStatus || d.data().status || "queued";
-    if (s.includes("complete")) complete++;
-    else if (s.includes("processing")) processing++;
-    else if (s.includes("error")) errors++;
-    else if (s.includes("skipped")) skipped++;
-    else queued++;
-  });
-  setStatus("cleanupStatus", `Queue:\nQueued: ${queued}\nProcessing: ${processing}\nComplete: ${complete}\nErrors: ${errors}\nSkipped safe: ${skipped}`);
-}
-
-async function refreshDashboard() {
-  await checkWorker();
-  await loadScanState();
-  await loadSenders();
-}
-
-function bind() {
-  $("firebaseLoginBtn").onclick = firebaseLogin;
-  $("logoutBtn").onclick = async () => { await signOut(auth); };
-  $("startServerScanBtn").onclick = startServerScan;
-  $("pauseServerScanBtn").onclick = pauseServerScan;
-  $("resetServerScanBtn").onclick = resetServerScan;
-  $("refreshBtn").onclick = refreshDashboard;
-  $("selectCleanupBtn").onclick = () => {
-    Object.values(senders).forEach((s) => { if (s.bucket === "cleanup") selected.add(s.key); });
-    renderSenders();
-  };
-  $("clearSelectedBtn").onclick = () => { selected.clear(); renderSenders(); };
-  $("saveQueueBtn").onclick = saveQueue;
-  $("triggerWorkerBtn").onclick = triggerWorker;
-  $("queueStatusBtn").onclick = loadQueueStatus;
-}
-
-onAuthStateChanged(auth, async (currentUser) => {
-  user = currentUser;
-  if (user) {
-    await setDoc(doc(db, "users", user.uid), { email: user.email, updatedAt: new Date().toISOString() }, { merge: true });
-  }
-  updateAuth();
-  await refreshDashboard();
-});
-
-try {
-  bind();
-  handleRedirectResult();
-  updateAuth();
-  checkWorker();
-  setInterval(refreshDashboard, 15000);
-} catch (error) {
-  setStatus("authStatus", "Fatal app error:\n" + (error.message || error));
-}
+onAuthStateChanged(auth, async u=>{ user=u; if(user) await setDoc(doc(db,"users",user.uid),{email:user.email,updatedAt:new Date().toISOString()},{merge:true}); updateAuth(); await refreshDashboard(); });
+bind(); handleRedirectResult(); updateAuth(); checkWorker(); setInterval(refreshDashboard,15000);

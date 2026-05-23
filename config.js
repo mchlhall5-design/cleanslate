@@ -1,6 +1,5 @@
 window.CLEANSATE_CONFIG = {
-  APP_VERSION: "CleanSlate Server-Side Fast Fix V1",
-  GOOGLE_CLIENT_ID: "512137679024-o2b1stjgp7lhpc8pj53v016q5cqkbc1k.apps.googleusercontent.com",
+  APP_VERSION: "CleanSlate Render OAuth Final V1",
   FIREBASE: {
     apiKey: "AIzaSyDlY_ZKDAbTCAvLwJksuQ03vMUN6TNGgd4",
     authDomain: "cleanslate-c9be5.firebaseapp.com",
