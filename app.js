@@ -12,6 +12,7 @@ import {
   getFirestore,
   doc,
   setDoc,
+  getDoc,
   getDocs,
   collection,
   writeBatch,
@@ -275,11 +276,47 @@ function scanState() {
   }
 }
 
-function saveScanState(state) {
+async function loadScanStateFromFirebase() {
+  const localState = scanState();
+
+  if (!user) return localState;
+
+  try {
+    const snap = await getDoc(doc(db, "users", user.uid, "state", "scan"));
+    if (!snap.exists()) return localState;
+
+    const remoteState = snap.data() || {};
+    const remoteTotal = Number(remoteState.total || 0);
+    const localTotal = Number(localState.total || 0);
+
+    // Use whichever state is farther along so progress never moves backward.
+    if (remoteTotal >= localTotal) {
+      const cleaned = {
+        total: remoteTotal,
+        pages: Number(remoteState.pages || 0),
+        nextPageToken: remoteState.nextPageToken || "",
+        done: Boolean(remoteState.done)
+      };
+      localStorage.setItem("cs_scan_state_pro", JSON.stringify(cleaned));
+      return cleaned;
+    }
+
+    return localState;
+  } catch (error) {
+    setStatus("scanStatus", "Could not load Firebase scan state. Using local saved progress.\\n" + (error.message || error));
+    return localState;
+  }
+}
+
+async function saveScanState(state) {
   localStorage.setItem("cs_scan_state_pro", JSON.stringify(state));
+
   if (user) {
-    setDoc(doc(db, "users", user.uid, "state", "scan"), {
-      ...state,
+    await setDoc(doc(db, "users", user.uid, "state", "scan"), {
+      total: Number(state.total || 0),
+      pages: Number(state.pages || 0),
+      nextPageToken: state.nextPageToken || "",
+      done: Boolean(state.done),
       updatedAt: serverTimestamp()
     }, { merge: true });
   }
@@ -299,7 +336,7 @@ async function scanMailbox() {
   scanRunning = true;
   scanPaused = false;
 
-  let state = scanState();
+  let state = await loadScanStateFromFirebase();
   state.total = state.total || 0;
   state.pages = state.pages || 0;
   state.nextPageToken = state.nextPageToken || "";
@@ -364,7 +401,7 @@ async function scanMailbox() {
         state.nextPageToken = page.nextPageToken || "";
       }
 
-      saveScanState(state);
+      await saveScanState(state);
       updateStats(state);
       renderSenders();
 
@@ -382,14 +419,14 @@ async function scanMailbox() {
       await sleep(50);
     }
 
-    saveScanState(state);
+    await saveScanState(state);
     renderSenders();
     await bulkSaveFirebase();
 
     setStatus("scanStatus", scanPaused ? `Paused. Saved at ${state.total} emails.` : `Scan complete. ${state.total} emails scanned.`);
   } catch (error) {
     setStatus("scanStatus", `Scan stopped safely. Progress saved.\n${error.message || error}`);
-    saveScanState(state);
+    await saveScanState(state);
   }
 
   scanRunning = false;
@@ -440,6 +477,10 @@ async function saveQueue() {
   }
 
   const selectedSenders = [...selected].map((key) => senders[key]).filter(Boolean);
+  if (!selectedSenders.length) {
+    setStatus("cleanupStatus", "No senders selected.");
+    return;
+  }
 
   for (let i = 0; i < selectedSenders.length; i += 450) {
     const batch = writeBatch(db);
@@ -447,13 +488,18 @@ async function saveQueue() {
       batch.set(doc(db, "users", user.uid, "cleanupQueue", sender.key), {
         ...sender,
         status: "queued",
-        updatedAt: new Date().toISOString()
+        action: "unsubscribe_and_delete",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        source: "frontend",
+        workerStatus: "waiting_for_render_worker"
       }, { merge: true });
     });
     await batch.commit();
   }
 
-  setStatus("cleanupStatus", `Saved ${selectedSenders.length} selected senders to Firebase cleanup queue.`);
+  setStatus("cleanupStatus", `Saved ${selectedSenders.length} selected senders to Firebase cleanup queue.
+Render worker can process these while your phone is locked once deployed.`);
 }
 
 function queryForSender(sender) {
@@ -621,6 +667,12 @@ function importBackup(file) {
   reader.readAsText(file);
 }
 
+
+async function showWorkerSetupStatus() {
+  if (!user) return;
+  setStatus("cleanupStatus", "Firebase queue is ready. For true background cleanup, deploy the Render worker package and add its environment variables.");
+}
+
 function bindButtons() {
   const bind = (id, fn) => {
     const button = $(id);
@@ -646,7 +698,12 @@ function bindButtons() {
     scanPaused = true;
     setStatus("scanStatus", "Pause requested. Stopping as soon as the active Gmail requests finish...");
   });
-  bind("syncBtn", loadFirebaseSenders);
+  bind("syncBtn", async () => {
+    await loadFirebaseSenders();
+    const state = await loadScanStateFromFirebase();
+    updateStats(state);
+    setStatus("scanStatus", `Synced from Firebase. Saved at ${state.total || 0} emails.`);
+  });
   bind("selectUnsafeBtn", () => {
     Object.values(senders).forEach((sender) => {
       if (sender.bucket !== "safe" && (sender.unsubUrl || sender.unsubMailto)) selected.add(sender.key);
@@ -679,4 +736,4 @@ initGoogleOAuth();
 updateAuth();
 updateStats();
 renderSenders();
-setStatus("scanStatus", "Ready.");
+setStatus("scanStatus", `Ready. Local saved progress: ${scanState().total || 0} emails.`);
