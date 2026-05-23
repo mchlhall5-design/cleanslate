@@ -2,6 +2,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/fireba
 import {
   getAuth,
   GoogleAuthProvider,
+  signInWithPopup,
   signInWithRedirect,
   getRedirectResult,
   signOut,
@@ -40,6 +41,11 @@ function setStatus(id, msg) {
   if (el) el.textContent = msg || "";
 }
 
+function showMainError(error) {
+  const message = error?.message || error?.code || JSON.stringify(error);
+  setStatus("authStatus", `Firebase login error:\n${message}\n\nAuth domain: ${CFG.FIREBASE?.authDomain || "missing"}\nProject: ${CFG.FIREBASE?.projectId || "missing"}`);
+}
+
 function escapeHtml(value) {
   return String(value || "").replace(/[&<>"']/g, (char) => ({
     "&": "&amp;",
@@ -51,10 +57,7 @@ function escapeHtml(value) {
 }
 
 function cleanKey(value) {
-  return String(value || "unknown")
-    .toLowerCase()
-    .replace(/[.#$/\[\]]/g, "_")
-    .slice(0, 180);
+  return String(value || "unknown").toLowerCase().replace(/[.#$/\[\]]/g, "_").slice(0, 180);
 }
 
 function updateAuth() {
@@ -68,14 +71,27 @@ async function firebaseLogin() {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
   setStatus("authStatus", "Opening Firebase Google sign-in...");
-  await signInWithRedirect(auth, provider);
+
+  try {
+    await signInWithPopup(auth, provider);
+  } catch (popupError) {
+    setStatus("authStatus", `Popup login did not complete:\n${popupError.message || popupError.code}\n\nTrying redirect login...`);
+    try {
+      await signInWithRedirect(auth, provider);
+    } catch (redirectError) {
+      showMainError(redirectError);
+    }
+  }
 }
 
 async function handleRedirectResult() {
   try {
-    await getRedirectResult(auth);
+    const result = await getRedirectResult(auth);
+    if (result?.user) {
+      setStatus("authStatus", `Firebase signed in:\n${result.user.email}`);
+    }
   } catch (error) {
-    setStatus("authStatus", "Firebase redirect error: " + (error.message || String(error)));
+    showMainError(error);
   }
 }
 
@@ -135,10 +151,7 @@ async function gmailFetch(url, options = {}) {
     throw new Error("Gmail session expired. Tap Connect Gmail Access again.");
   }
 
-  if (!response.ok) {
-    throw new Error(`Gmail ${response.status}: ${(await response.text()).slice(0, 220)}`);
-  }
-
+  if (!response.ok) throw new Error(`Gmail ${response.status}: ${(await response.text()).slice(0, 220)}`);
   return response.json();
 }
 
@@ -150,7 +163,6 @@ function parseFrom(value) {
   const input = value || "";
   const match = input.match(/"?([^"<]+)"?\s*<([^>]+)>/);
   if (match) return { name: match[1].trim().replace(/^"|"$/g, ""), email: match[2].trim().toLowerCase() };
-
   const email = (input.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i) || [""])[0].toLowerCase();
   return { name: email ? email.split("@")[0] : input || "Unknown", email: email || input.toLowerCase() };
 }
@@ -520,11 +532,7 @@ async function unsubscribeQueue() {
         complete++;
       } else if (sender.unsubUrl) {
         try {
-          await fetch(sender.unsubUrl, {
-            method: sender.oneClick ? "POST" : "GET",
-            mode: "no-cors",
-            cache: "no-store"
-          });
+          await fetch(sender.unsubUrl, { method: sender.oneClick ? "POST" : "GET", mode: "no-cors", cache: "no-store" });
           status = "submitted_unverified";
           complete++;
         } catch {
