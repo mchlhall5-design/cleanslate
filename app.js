@@ -1,592 +1,297 @@
 
-const CFG = window.CLEANSATE_CONFIG || {};
-const CLIENT_ID = CFG.GOOGLE_CLIENT_ID || "";
-const DB_NAME = "cleanslate_v7_db";
-const DB_VERSION = 1;
-const SCOPE = [
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/gmail.modify",
-  "https://www.googleapis.com/auth/gmail.send"
-].join(" ");
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+import { getFirestore, doc, setDoc, getDoc, collection, getDocs, writeBatch, serverTimestamp, query, limit } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
+const CFG = window.CLEANSATE_CONFIG;
+const app = initializeApp(CFG.FIREBASE);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+let user = null;
+let accessToken = localStorage.getItem("cs_gmail_token") || "";
 let tokenClient = null;
-let accessToken = localStorage.getItem("cs_access_token") || "";
+let selected = new Set();
 let scanPaused = false;
 let scanRunning = false;
-let selected = new Set();
+let senders = {};
 
-const $ = (id)=>document.getElementById(id);
-const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+function setStatus(id,msg){ const el=$(id); if(el) el.textContent = msg || ""; }
+function uid(){ return user?.uid || "local"; }
+function cleanKey(v){ return (v||"unknown").toLowerCase().replace(/[.#$/\\[\\]]/g,"_").slice(0,180); }
 
-function setStatus(id,msg){ $(id).textContent = msg || ""; }
-function updateAuthUI(){
-  $("authBadge").textContent = accessToken ? "Gmail connected" : "Not connected";
-  $("authStatus").textContent = accessToken ? "Connected. Start or resume the full mailbox scan." : "Not connected.";
+async function saveUserDoc(){
+  if(!user) return;
+  await setDoc(doc(db,"users",user.uid),{
+    email:user.email,
+    displayName:user.displayName || "",
+    updatedAt:serverTimestamp()
+  },{merge:true});
 }
+function updateAuth(){
+  $("authStatus").textContent = `Firebase: ${user ? user.email : "not signed in"}\nGmail token: ${accessToken ? "connected" : "not connected"}`;
+}
+
+async function firebaseLogin(){
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({prompt:"select_account"});
+  try { await signInWithPopup(auth, provider); }
+  catch(e){
+    setStatus("authStatus","Popup failed/blocked. Trying redirect sign-in...");
+    await signInWithRedirect(auth, provider);
+  }
+}
+
+onAuthStateChanged(auth, async u=>{
+  user = u;
+  if(user){ await saveUserDoc(); await loadFirebaseSenders(); }
+  updateAuth();
+});
+
+getRedirectResult(auth).catch(()=>{});
 
 function initGoogle(){
-  if(!CLIENT_ID || CLIENT_ID.includes("PASTE")){
-    setStatus("authStatus","Missing Google Client ID in config.js");
-    return;
-  }
-  if(!window.google || !google.accounts || !google.accounts.oauth2){
-    setTimeout(initGoogle,500);
-    return;
-  }
+  if(!window.google?.accounts?.oauth2){ setTimeout(initGoogle,500); return; }
   tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: CLIENT_ID,
-    scope: SCOPE,
-    prompt: "select_account consent",
-    callback: (resp)=>{
-      if(resp.error){
-        setStatus("authStatus", "Google auth error: " + JSON.stringify(resp));
-        return;
-      }
+    client_id: CFG.GOOGLE_CLIENT_ID,
+    scope: [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.modify",
+      "https://www.googleapis.com/auth/gmail.send"
+    ].join(" "),
+    prompt:"select_account consent",
+    callback: resp=>{
+      if(resp.error){ setStatus("authStatus","Gmail OAuth error: "+JSON.stringify(resp)); return; }
       accessToken = resp.access_token;
-      localStorage.setItem("cs_access_token", accessToken);
-      updateAuthUI();
+      localStorage.setItem("cs_gmail_token", accessToken);
+      updateAuth();
     }
   });
 }
-
-function openDb(){
-  return new Promise((resolve,reject)=>{
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = ()=>{
-      const db=req.result;
-      if(!db.objectStoreNames.contains("senders")) db.createObjectStore("senders",{keyPath:"key"});
-      if(!db.objectStoreNames.contains("state")) db.createObjectStore("state",{keyPath:"key"});
-    };
-    req.onsuccess=()=>resolve(req.result);
-    req.onerror=()=>reject(req.error);
-  });
-}
-async function dbGet(store,key){const db=await openDb();return new Promise((res,rej)=>{const tx=db.transaction(store,"readonly");const r=tx.objectStore(store).get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
-async function dbPut(store,val){const db=await openDb();return new Promise((res,rej)=>{const tx=db.transaction(store,"readwrite");tx.objectStore(store).put(val);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);});}
-async function dbAll(store){const db=await openDb();return new Promise((res,rej)=>{const tx=db.transaction(store,"readonly");const r=tx.objectStore(store).getAll();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error);});}
-async function dbClearAll(){
-  localStorage.removeItem("cs_scan_state");
-  selected.clear();
-  indexedDB.deleteDatabase(DB_NAME);
-  await sleep(500);
-  location.reload();
-}
+initGoogle();
 
 function authHeaders(){ return {Authorization:`Bearer ${accessToken}`}; }
-
 async function gmailFetch(url, opts={}){
   const res = await fetch(url,{...opts,headers:{...(opts.headers||{}),...authHeaders()}});
-  if(res.status===401){
-    accessToken="";
-    localStorage.removeItem("cs_access_token");
-    updateAuthUI();
-    throw new Error("Google session expired. Tap Connect Gmail again, then resume scan.");
-  }
-  if(!res.ok){
-    const t=await res.text();
-    throw new Error(`Gmail API error ${res.status}: ${t.slice(0,250)}`);
-  }
+  if(res.status===401){ accessToken=""; localStorage.removeItem("cs_gmail_token"); updateAuth(); throw new Error("Gmail session expired. Connect Gmail again.");}
+  if(!res.ok){ throw new Error(`Gmail ${res.status}: ${(await res.text()).slice(0,220)}`);}
   return res.json();
 }
-
-function parseEmailName(v){
-  if(!v) return {name:"Unknown sender",email:""};
-  const m = v.match(/"?([^"<]+)"?\s*<([^>]+)>/);
-  if(m) return {name:m[1].trim().replace(/^"|"$/g,''), email:m[2].trim().toLowerCase()};
-  const email = (v.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)||[""])[0].toLowerCase();
-  return {name:(email ? email.split("@")[0] : v).trim(), email: email || v.trim().toLowerCase()};
+function header(headers,name){ return (headers||[]).find(h=>(h.name||"").toLowerCase()===name.toLowerCase())?.value || ""; }
+function parseFrom(v){
+  const m=(v||"").match(/"?([^"<]+)"?\s*<([^>]+)>/);
+  if(m) return {name:m[1].trim().replace(/^"|"$/g,""), email:m[2].trim().toLowerCase()};
+  const email=((v||"").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/i)||[""])[0].toLowerCase();
+  return {name: email ? email.split("@")[0] : (v||"Unknown"), email: email || (v||"").toLowerCase()};
 }
-function domainOf(email){ return (email.split("@")[1]||email).toLowerCase().replace(/^www\./,""); }
-function header(headers,name){ const h=(headers||[]).find(x=>(x.name||"").toLowerCase()===name.toLowerCase()); return h ? h.value : ""; }
+function domainOf(email){ return (email.split("@")[1]||email).toLowerCase().replace(/^www\\./,""); }
 function extractUnsub(headers){
-  const raw = header(headers,"List-Unsubscribe");
-  const oneClick = header(headers,"List-Unsubscribe-Post");
-  if(!raw) return {url:"", mailto:"", oneClick:!!oneClick};
-  const bracketUrls = [...raw.matchAll(/<([^>]+)>/g)].map(x=>x[1]);
-  const splitUrls = raw.split(",").map(x=>x.trim());
-  const urls = bracketUrls.concat(splitUrls).filter(Boolean);
-  const https = urls.find(u=>/^https?:\/\//i.test(u) && !/example\.com/i.test(u));
-  const mailto = urls.find(u=>/^mailto:/i.test(u));
-  return {url:https||"", mailto:mailto||"", oneClick:!!oneClick, raw};
+  const raw=header(headers,"List-Unsubscribe");
+  const one=!!header(headers,"List-Unsubscribe-Post");
+  const urls=[...[...(raw||"").matchAll(/<([^>]+)>/g)].map(x=>x[1]), ...(raw||"").split(",").map(x=>x.trim())].filter(Boolean);
+  return {
+    url: urls.find(u=>/^https?:\\/\\//i.test(u) && !/example\\.com/i.test(u)) || "",
+    mailto: urls.find(u=>/^mailto:/i.test(u)) || "",
+    oneClick: one
+  };
 }
-const protectedWords = [
-  "bank","credit","capital one","fidelity","mortgage","loan","insurance","geico","progressive","state farm",
-  "doctor","medical","hospital","mychart","health","pharmacy","rx","medicaid","social security",
-  "irs","tax","turbotax","payroll","w2","receipt","order","invoice","payment","statement","bill","utility",
-  "honda","acura","regal","google","apple","amazon","walmart","target","netflix","disney","school","daycare",
-  "xfinity","spectrum","t-mobile","verizon","at&t","paypal","zelle","cash app"
-];
-function classifySender(s){
-  const txt = `${s.name} ${s.email} ${s.domain}`.toLowerCase();
-  const safe = protectedWords.some(w=>txt.includes(w)) || (s.count>=15 && !s.unsubUrl && !s.unsubMailto);
-  if(safe) return {bucket:"safe", label:"KEEP SAFE", score:100};
-  if(s.unsubUrl || s.unsubMailto) return {bucket:"remove", label:"UNSUBSCRIBE", score:20};
-  return {bucket:"manual", label:"REVIEW", score:50};
+const protectedWords = ["bank","credit","capital one","fidelity","mortgage","loan","insurance","geico","progressive","doctor","medical","hospital","mychart","pharmacy","irs","tax","payroll","w2","receipt","order","invoice","payment","statement","bill","utility","honda","acura","regal","google","apple","amazon","walmart","netflix","school","daycare","paypal","zelle","wallet"];
+function classify(s){
+  const txt=`${s.name} ${s.email} ${s.domain}`.toLowerCase();
+  if(protectedWords.some(w=>txt.includes(w))) return "safe";
+  if(s.unsubUrl || s.unsubMailto) return "cleanup";
+  return "review";
 }
-async function upsertSender(fromHeader, headers){
-  const p = parseEmailName(fromHeader);
-  const key = p.email || p.name.toLowerCase();
-  const domain = domainOf(p.email||p.name);
-  const unsub = extractUnsub(headers);
-  let s = await dbGet("senders",key);
-  if(!s) s={key,name:p.name||p.email,email:p.email,domain,count:0,lastSeen:Date.now(),unsubUrl:"",unsubMailto:"",oneClick:false};
-  s.count++;
-  s.lastSeen = Date.now();
-  if(unsub.url) s.unsubUrl=unsub.url;
-  if(unsub.mailto) s.unsubMailto=unsub.mailto;
-  s.oneClick = s.oneClick || unsub.oneClick;
-  const cls = classifySender(s);
-  s.bucket=cls.bucket; s.label=cls.label; s.score=cls.score;
-  await dbPut("senders",s);
+async function upsertSender(from, headers){
+  const p=parseFrom(from), domain=domainOf(p.email||p.name), key=cleanKey(p.email||domain||p.name), unsub=extractUnsub(headers);
+  const old=senders[key] || {key,name:p.name,email:p.email,domain,count:0,unsubUrl:"",unsubMailto:"",oneClick:false,protected:false};
+  old.name=p.name||old.name; old.email=p.email||old.email; old.domain=domain||old.domain; old.count=(old.count||0)+1;
+  if(unsub.url) old.unsubUrl=unsub.url;
+  if(unsub.mailto) old.unsubMailto=unsub.mailto;
+  old.oneClick = old.oneClick || unsub.oneClick;
+  old.bucket = old.protected ? "safe" : classify(old);
+  senders[key]=old;
+  localStorage.setItem("cs_senders_cache", JSON.stringify(senders));
 }
+async function saveSenderToFirebase(s){
+  if(!user) return;
+  await setDoc(doc(db,"users",user.uid,"senders",s.key), {...s, updatedAt:serverTimestamp()}, {merge:true});
+}
+async function bulkSaveFirebase(){
+  if(!user) return;
+  const vals=Object.values(senders);
+  for(let i=0;i<vals.length;i+=450){
+    const batch=writeBatch(db);
+    vals.slice(i,i+450).forEach(s=>batch.set(doc(db,"users",user.uid,"senders",s.key), {...s, updatedAt:new Date().toISOString()}, {merge:true}));
+    await batch.commit();
+    setStatus("scanStatus",`Saved ${Math.min(i+450, vals.length)}/${vals.length} sender groups to Firebase.`);
+    await sleep(100);
+  }
+}
+async function loadFirebaseSenders(){
+  if(!user) return;
+  const snap=await getDocs(query(collection(db,"users",user.uid,"senders"), limit(10000)));
+  snap.forEach(d=>{ senders[d.id]=d.data(); });
+  renderSenders();
+}
+function loadLocalState(){
+  try{ senders = JSON.parse(localStorage.getItem("cs_senders_cache")||"{}"); }catch{senders={};}
+}
+loadLocalState();
 
-async function fetchMessageMeta(id){
-  const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=List-Unsubscribe&metadataHeaders=List-Unsubscribe-Post`;
-  return gmailFetch(url);
-}
-
-async function mapConcurrent(items, limit, fn){
-  let i=0, done=0;
-  const workers = Array.from({length:limit}, async ()=>{
-    while(i<items.length && !scanPaused){
-      const item=items[i++];
-      try{ await fn(item); } catch(e){ console.warn(e); }
-      done++;
-      if(done % 20 === 0) await sleep(1);
-    }
-  });
-  await Promise.all(workers);
-}
-
-async function saveScanState(st){ localStorage.setItem("cs_scan_state", JSON.stringify(st)); await dbPut("state",{key:"scan",...st}); }
-function loadScanState(){ try{return JSON.parse(localStorage.getItem("cs_scan_state")||"{}")}catch{return {}} }
-
-async function updateProgress(st){
-  $("scanCount").textContent = `${st.totalScanned||0} emails scanned`;
-  $("pageCount").textContent = `${st.pages||0} pages`;
-  const all = await dbAll("senders");
-  $("senderCount").textContent = `${all.length} senders found`;
-  const pct = st.done ? 100 : Math.min(98, ((st.pages||0)%50)*2);
-  $("progressFill").style.width = pct + "%";
-}
-
-async function scanFullMailbox(){
+function scanState(){ try{return JSON.parse(localStorage.getItem("cs_scan_state_pro")||"{}")}catch{return {}}}
+function saveScanState(st){ localStorage.setItem("cs_scan_state_pro", JSON.stringify(st)); if(user) setDoc(doc(db,"users",user.uid,"state","scan"), {...st, updatedAt:serverTimestamp()},{merge:true});}
+async function scan(){
   if(scanRunning) return;
   if(!accessToken){ setStatus("scanStatus","Connect Gmail first."); return; }
   scanRunning=true; scanPaused=false;
-  let st = loadScanState();
-  if(!st || typeof st !== "object") st = {};
-  st.totalScanned = st.totalScanned || 0;
-  st.pages = st.pages || 0;
-  st.nextPageToken = st.nextPageToken || "";
-  st.done = false;
-
+  let st=scanState(); st.total=st.total||0; st.pages=st.pages||0; st.nextPageToken=st.nextPageToken||""; st.done=false;
   try{
     while(!scanPaused){
-      const tokenParam = st.nextPageToken ? `&pageToken=${encodeURIComponent(st.nextPageToken)}` : "";
-      const queryParam = CFG.SCAN_QUERY ? `&q=${encodeURIComponent(CFG.SCAN_QUERY)}` : "";
-      setStatus("scanStatus",`Scanning page ${st.pages+1}...\nSaved progress: ${st.totalScanned} emails`);
-      const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${CFG.MAX_LIST_PAGE_SIZE||500}${queryParam}${tokenParam}`;
-      const page = await gmailFetch(listUrl);
-      const messages = page.messages || [];
-      if(messages.length === 0){
-        st.done = true;
-        await saveScanState(st);
-        break;
-      }
-      await mapConcurrent(messages, CFG.MESSAGE_FETCH_CONCURRENCY||6, async (m)=>{
-        const msg = await fetchMessageMeta(m.id);
-        const headers = msg.payload?.headers || [];
-        const from = header(headers,"From");
-        if(from) await upsertSender(from, headers);
+      const pt=st.nextPageToken ? `&pageToken=${encodeURIComponent(st.nextPageToken)}` : "";
+      const page=await gmailFetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${CFG.MAX_LIST_PAGE_SIZE||500}${pt}`);
+      const msgs=page.messages||[];
+      if(!msgs.length){ st.done=true; break; }
+      let i=0;
+      const workers=Array.from({length:CFG.MESSAGE_FETCH_CONCURRENCY||8}, async()=>{
+        while(i<msgs.length && !scanPaused){
+          const m=msgs[i++];
+          try{
+            const msg=await gmailFetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=From&metadataHeaders=List-Unsubscribe&metadataHeaders=List-Unsubscribe-Post`);
+            const headers=msg.payload?.headers||[];
+            const from=header(headers,"From");
+            if(from) await upsertSender(from, headers);
+          }catch(e){ console.warn(e); }
+        }
       });
-      st.totalScanned += messages.length;
-      st.pages += 1;
-      st.nextPageToken = page.nextPageToken || "";
-      await saveScanState(st);
-      await updateProgress(st);
-      if(st.pages % 2 === 0) await renderSenderList(false);
+      await Promise.all(workers);
+      st.total += msgs.length; st.pages += 1; st.nextPageToken = page.nextPageToken || "";
+      saveScanState(st);
+      updateStats(st);
+      if(st.pages % 2 === 0) { renderSenders(); await bulkSaveFirebase(); }
+      if(!st.nextPageToken){ st.done=true; break; }
       await sleep(50);
-      if(!st.nextPageToken){
-        st.done = true;
-        await saveScanState(st);
-        break;
-      }
     }
-    await updateProgress(st);
-    await renderSenderList(true);
-    setStatus("scanStatus", scanPaused ? `Paused. Saved at ${st.totalScanned} emails. Tap Start / Resume to continue.` : `Full scan finished or Gmail returned no more pages. Total scanned: ${st.totalScanned}.`);
-  }catch(e){
-    await saveScanState(st);
-    setStatus("scanStatus",`Scan stopped safely, progress saved.\n${e.message}\nTap Connect Gmail if needed, then Start / Resume.`);
-  }finally{
-    scanRunning=false;
-  }
+    saveScanState(st);
+    renderSenders(); await bulkSaveFirebase();
+    setStatus("scanStatus", scanPaused ? `Paused. Saved at ${st.total} emails.` : `Scan complete. ${st.total} emails scanned.`);
+  }catch(e){ setStatus("scanStatus",`Scan stopped safely. Progress saved.\\n${e.message}`); saveScanState(st); }
+  scanRunning=false;
 }
-
-function safeText(s){ return (s||"").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c])); }
-
-async function renderSenderList(full=true){
-  const senders = await dbAll("senders");
-  const sorted = senders.sort((a,b)=>{
-    const order = {safe:0, remove:1, manual:2};
-    return (order[a.bucket]??9)-(order[b.bucket]??9) || (b.count||0)-(a.count||0);
+function updateStats(st=scanState()){
+  $("emailCount").textContent = `${st.total||0} emails`;
+  $("senderCount").textContent = `${Object.keys(senders).length} senders`;
+  $("pageCount").textContent = `${st.pages||0} pages`;
+  $("progressFill").style.width = st.done ? "100%" : `${Math.min(98, ((st.pages||0)%50)*2)}%`;
+}
+function renderSenders(){
+  const vals=Object.values(senders).sort((a,b)=>{
+    const o={safe:0,cleanup:1,review:2}; return (o[a.bucket]??9)-(o[b.bucket]??9) || (b.count||0)-(a.count||0);
   });
-  const list = $("senderList");
-  const show = sorted.slice(0, full ? 500 : 120);
-  let auto=0, manual=0;
-  sorted.forEach(s=>{ if((s.unsubUrl||s.unsubMailto)&&s.bucket!=="safe") auto++; else if(s.bucket!=="safe") manual++; });
-  $("autoCount").textContent = auto;
-  $("manualCount").textContent = manual;
+  $("safeCount").textContent = vals.filter(s=>s.bucket==="safe").length;
+  $("unsafeCount").textContent = vals.filter(s=>s.bucket!=="safe").length;
   $("selectedCount").textContent = selected.size;
-  list.innerHTML = show.map(s=>{
-    const canSelect = s.bucket !== "safe" && (s.unsubUrl || s.unsubMailto);
-    const pillClass = s.bucket==="safe" ? "safeP" : (s.bucket==="remove" ? "badP":"warnP");
-    const checked = selected.has(s.key) ? "checked" : "";
-    return `<div class="senderCard ${s.bucket}">
-      <input type="checkbox" data-key="${safeText(s.key)}" ${checked} ${canSelect?"":"disabled"}>
-      <div>
-        <div class="senderTitle">${safeText(s.name || s.email || s.domain)}</div>
-        <div class="senderMeta">${safeText(s.email || s.domain)} • ${s.count||0} emails${s.unsubUrl ? " • auto link" : s.unsubMailto ? " • mail unsubscribe" : ""}</div>
-      </div>
-      <div class="pill ${pillClass}">${s.label || s.bucket}</div>
+  $("senderList").innerHTML = vals.slice(0, CFG.RENDER_LIMIT||500).map(s=>{
+    const selectable=s.bucket!=="safe";
+    return `<div class="sender ${s.bucket}">
+      <input type="checkbox" data-key="${s.key}" ${selected.has(s.key)?"checked":""} ${selectable?"":"disabled"}>
+      <div><div class="title">${escapeHtml(s.name||s.email||s.domain)}</div><div class="meta">${escapeHtml(s.email||s.domain||"")} • ${s.count||0} emails ${s.unsubUrl||s.unsubMailto?"• unsubscribe link":""}</div></div>
+      <div class="pill">${s.bucket==="safe"?"KEEP SAFE":s.bucket==="cleanup"?"CLEANUP":"REVIEW"}</div>
     </div>`;
   }).join("");
-  list.querySelectorAll("input[type=checkbox]").forEach(cb=>{
-    cb.addEventListener("change",()=>{
-      if(cb.checked) selected.add(cb.dataset.key); else selected.delete(cb.dataset.key);
-      $("selectedCount").textContent = selected.size;
-    });
-  });
+  document.querySelectorAll("input[data-key]").forEach(cb=>cb.onchange=()=>{ cb.checked?selected.add(cb.dataset.key):selected.delete(cb.dataset.key); $("selectedCount").textContent=selected.size; });
 }
-
-async function selectAllUnsafe(){
-  const senders = await dbAll("senders");
-  senders.forEach(s=>{
-    if(s.bucket!=="safe" && (s.unsubUrl || s.unsubMailto)) selected.add(s.key);
-  });
-  await renderSenderList(true);
-}
-
-async function sendMailtoUnsub(mailto){
-  const url = mailto.replace(/^mailto:/i,"");
-  const [toPart, qs] = url.split("?");
-  const params = new URLSearchParams(qs || "");
-  const to = decodeURIComponent(toPart);
-  const subject = params.get("subject") || "Unsubscribe";
-  const body = params.get("body") || "Please unsubscribe me from this mailing list.";
-  const raw = btoa(unescape(encodeURIComponent(
-    `To: ${to}\r\nSubject: ${subject}\r\n\r\n${body}`
-  ))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-  const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send",{
-    method:"POST",
-    headers:{...authHeaders(),"Content-Type":"application/json"},
-    body:JSON.stringify({raw})
-  });
-  if(!res.ok) throw new Error(await res.text());
-}
-
-
-function gmailSearchQueryForSender(s){
-  const email = (s.email || "").trim();
-  const domain = (s.domain || "").trim();
-  if(email && email.includes("@")) return `from:${email}`;
-  if(domain) return `from:${domain}`;
-  return "";
-}
-
-async function listMessageIdsForQuery(q, pageToken=""){
-  const pt = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
-  const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=500&q=${encodeURIComponent(q)}${pt}`;
-  return gmailFetch(url);
-}
-
-async function gmailBatchModify(ids, addLabels=[], removeLabels=[]){
-  if(!ids.length) return;
-  const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",{
-    method:"POST",
-    headers:{...authHeaders(),"Content-Type":"application/json"},
-    body:JSON.stringify({ids, addLabelIds:addLabels, removeLabelIds:removeLabels})
-  });
-  if(!res.ok) throw new Error(await res.text());
-}
-
-async function saveCleanupState(st){
-  localStorage.setItem("cs_cleanup_state", JSON.stringify(st));
-  await dbPut("state",{key:"cleanup",...st});
-}
-function loadCleanupState(){
-  try{return JSON.parse(localStorage.getItem("cs_cleanup_state")||"{}")}catch{return {}}
-}
-let cleanupPaused = false;
-let cleanupRunning = false;
-
-async function runSenderEmailCleanup(action="trash", resume=false){
-  if(cleanupRunning) return;
-  if(!accessToken){ setStatus("cleanupStatus","Connect Gmail first."); return; }
-  cleanupPaused=false;
-  cleanupRunning=true;
-  try{
-    const senders = await dbAll("senders");
-    let st = resume ? loadCleanupState() : {};
-    if(!st || !st.targets || !resume){
-      const targets = senders.filter(s=>selected.has(s.key) && s.bucket !== "safe").map(s=>({
-        key:s.key,
-        name:s.name,
-        email:s.email,
-        domain:s.domain,
-        q:gmailSearchQueryForSender(s),
-        nextPageToken:"",
-        done:false,
-        processed:0
-      })).filter(t=>t.q);
-      st = {action, targetIndex:0, targets, totalProcessed:0, startedAt:Date.now(), done:false};
-      await saveCleanupState(st);
-    }
-    if(!st.targets || !st.targets.length){
-      setStatus("cleanupStatus","No selected non-safe senders found. Select spam/newsletter senders first.");
-      cleanupRunning=false;
-      return;
-    }
-    st.action = action || st.action || "trash";
-
-    for(let i=st.targetIndex || 0; i<st.targets.length; i++){
-      if(cleanupPaused) break;
-      const t = st.targets[i];
-      if(t.done) continue;
-      st.targetIndex=i;
-      setStatus("cleanupStatus",`${st.action === "archive" ? "Archiving" : "Deleting"} sender ${i+1}/${st.targets.length}\n${t.name || t.email || t.domain}\nProcessed so far: ${st.totalProcessed||0}`);
-      let keepGoing=true;
-      while(keepGoing && !cleanupPaused){
-        const page = await listMessageIdsForQuery(t.q, t.nextPageToken || "");
-        const ids = (page.messages||[]).map(m=>m.id);
-        if(ids.length){
-          if(st.action === "archive"){
-            await gmailBatchModify(ids, [], ["INBOX"]);
-          }else{
-            await gmailBatchModify(ids, ["TRASH"], []);
-          }
-          t.processed = (t.processed||0) + ids.length;
-          st.totalProcessed = (st.totalProcessed||0) + ids.length;
-          await saveCleanupState(st);
-          setStatus("cleanupStatus",`${st.action === "archive" ? "Archived" : "Moved to Trash"} ${st.totalProcessed} emails\nCurrent sender: ${t.name || t.email || t.domain}\nThis sender: ${t.processed}`);
-          await sleep(350);
-        }
-        t.nextPageToken = page.nextPageToken || "";
-        await saveCleanupState(st);
-        keepGoing = !!t.nextPageToken;
-        if(ids.length === 0 && !t.nextPageToken) keepGoing=false;
-      }
-      if(!cleanupPaused){
-        t.done=true;
-        await saveCleanupState(st);
-      }
-    }
-    if(cleanupPaused){
-      setStatus("cleanupStatus",`Paused safely. Saved after ${st.totalProcessed||0} emails. Tap Resume Saved Cleanup.`);
-    }else{
-      st.done=true;
-      await saveCleanupState(st);
-      setStatus("cleanupStatus",`Cleanup complete.\nAction: ${st.action === "archive" ? "Archived" : "Moved to Trash"}\nEmails processed: ${st.totalProcessed||0}\nSenders processed: ${st.targets.length}`);
-    }
-  }catch(e){
-    setStatus("cleanupStatus",`Cleanup stopped safely. Progress saved.\n${e.message}\nTap Resume Saved Cleanup.`);
-  }finally{
-    cleanupRunning=false;
+function escapeHtml(s){return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#039;"}[c]));}
+async function saveQueue(){
+  if(!user){ setStatus("cleanupStatus","Sign in with Firebase first."); return; }
+  const arr=[...selected].map(k=>senders[k]).filter(Boolean);
+  for(let i=0;i<arr.length;i+=450){
+    const batch=writeBatch(db);
+    arr.slice(i,i+450).forEach(s=>batch.set(doc(db,"users",user.uid,"cleanupQueue",s.key), {...s,status:"queued",updatedAt:new Date().toISOString()}, {merge:true}));
+    await batch.commit();
   }
+  setStatus("cleanupStatus",`Saved ${arr.length} selected senders to Firebase cleanup queue.`);
 }
-
-
-async function autoUnsubscribeSelected(){
-  if(!accessToken){ setStatus("unsubStatus","Connect Gmail first."); return; }
-  const senders = await dbAll("senders");
-  const targets = senders.filter(s=>selected.has(s.key));
-  let ok=0, manual=0, fail=0;
-  setStatus("unsubStatus",`Starting ${targets.length} unsubscribe attempts...`);
-  for(const s of targets){
-    try{
-      if(s.unsubMailto){
-        await sendMailtoUnsub(s.unsubMailto);
-        ok++;
-      }else if(s.unsubUrl){
-        try{
-          await fetch(s.unsubUrl, {method: s.oneClick ? "POST" : "GET", mode:"no-cors"});
-          ok++;
-        }catch(e){
-          manual++;
-          window.open(s.unsubUrl, "_blank");
-        }
-      }else{
-        manual++;
-      }
-    }catch(e){
-      fail++;
-      if(s.unsubUrl) window.open(s.unsubUrl, "_blank");
-    }
-    setStatus("unsubStatus",`Processed ${ok+manual+fail}/${targets.length}\nAuto/sent: ${ok}\nNeeds manual: ${manual}\nFailed: ${fail}`);
-    await sleep(250);
-  }
-}
-
-$("connectBtn").addEventListener("click",()=> tokenClient ? tokenClient.requestAccessToken({prompt:"select_account consent"}) : setStatus("authStatus","Google script still loading. Try again."));
-$("disconnectBtn").addEventListener("click",()=>{accessToken="";localStorage.removeItem("cs_access_token");updateAuthUI();});
-$("startScanBtn").addEventListener("click",scanFullMailbox);
-$("pauseScanBtn").addEventListener("click",()=>{scanPaused=true;setStatus("scanStatus","Pausing after current batch saves...");});
-$("resetScanBtn").addEventListener("click",dbClearAll);
-$("selectAllUnsafeBtn").addEventListener("click",selectAllUnsafe);
-$("clearSelectedBtn").addEventListener("click",()=>{selected.clear();renderSenderList(true);});
-$("refreshListBtn").addEventListener("click",()=>renderSenderList(true));
-$("deleteSelectedEmailsBtn").addEventListener("click",()=>runSenderEmailCleanup("trash",false));
-$("archiveSelectedEmailsBtn").addEventListener("click",()=>runSenderEmailCleanup("archive",false));
-$("resumeCleanupBtn").addEventListener("click",()=>{ const st=loadCleanupState(); runSenderEmailCleanup(st.action || "trash", true); });
-$("pauseCleanupBtn").addEventListener("click",()=>{ cleanupPaused=true; setStatus("cleanupStatus","Pausing after current batch saves..."); });
-$("unsubscribeBtn").addEventListener("click",autoUnsubscribeSelected);
-
-updateAuthUI();
-initGoogle();
-renderSenderList(false);
-(async()=>{ const st=loadScanState(); if(st.totalScanned) await updateProgress(st); })();
-
-
-/* ===== V10 FAST CLEANUP + NO FALSE UNSUBSCRIBE FAILURES ===== */
-function chunkArrayV10(arr, size){
-  const out=[];
-  for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size));
-  return out;
-}
-async function mapConcurrentV10(items, limit, fn){
-  let i=0;
-  const workers=Array.from({length:Math.min(limit, items.length)}, async()=>{
-    while(i<items.length){
-      const item=items[i++];
-      try{ await fn(item); }catch(e){ console.warn("V10 worker item handled", e); }
-      await sleep(1);
-    }
-  });
-  await Promise.all(workers);
-}
-async function gmailBatchModifyV10(ids, addLabels=[], removeLabels=[]){
-  for(const part of chunkArrayV10(ids, CFG.BATCH_MODIFY_SIZE || 1000)){
-    const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",{
-      method:"POST",
-      headers:{...authHeaders(),"Content-Type":"application/json"},
-      body:JSON.stringify({ids:part, addLabelIds:addLabels, removeLabelIds:removeLabels})
-    });
+function queryForSender(s){ if(s.email) return `from:${s.email}`; if(s.domain) return `from:${s.domain}`; return ""; }
+async function listIds(q, token=""){ const pt=token?`&pageToken=${encodeURIComponent(token)}`:""; return gmailFetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=500&q=${encodeURIComponent(q)}${pt}`);}
+async function batchModify(ids, add=[], remove=[]){
+  for(let i=0;i<ids.length;i+=1000){
+    const part=ids.slice(i,i+1000);
+    const res=await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",{method:"POST",headers:{...authHeaders(),"Content-Type":"application/json"},body:JSON.stringify({ids:part, addLabelIds:add, removeLabelIds:remove})});
     if(!res.ok) throw new Error(await res.text());
-    await sleep(50);
+    await sleep(80);
   }
 }
-async function runSenderEmailCleanupV10(action="trash", resume=false){
-  if(cleanupRunning) return;
+async function runCleanup(action){
   if(!accessToken){ setStatus("cleanupStatus","Connect Gmail first."); return; }
-  cleanupPaused=false; cleanupRunning=true;
-  try{
-    const senders=await dbAll("senders");
-    let st=resume ? loadCleanupState() : {};
-    if(!st.targets || !resume){
-      st={action, totalProcessed:0, done:false, version:"v10",
-        targets:senders.filter(s=>selected.has(s.key) && s.bucket!=="safe").map(s=>({
-          key:s.key,name:s.name,email:s.email,domain:s.domain,q:gmailSearchQueryForSender(s),
-          nextPageToken:"",done:false,processed:0
-        })).filter(t=>t.q)
-      };
-      await saveCleanupState(st);
-    }
-    if(!st.targets.length){
-      setStatus("cleanupStatus","No selected non-safe senders found. Select spam/newsletter senders first.");
-      cleanupRunning=false; return;
-    }
-    st.action=action || st.action || "trash";
-    const label=st.action==="archive" ? "Archiving" : "Moving to Trash";
-    setStatus("cleanupStatus",`FAST MODE STARTED\n${label} emails from ${st.targets.filter(t=>!t.done).length} selected senders...`);
-    await mapConcurrentV10(st.targets.filter(t=>!t.done), CFG.CLEANUP_CONCURRENCY || 5, async(t)=>{
-      while(!cleanupPaused && !t.done){
-        const page=await listMessageIdsForQuery(t.q, t.nextPageToken || "");
-        const ids=(page.messages||[]).map(m=>m.id);
-        if(ids.length){
-          if(st.action==="archive") await gmailBatchModifyV10(ids, [], ["INBOX"]);
-          else await gmailBatchModifyV10(ids, ["TRASH"], []);
-          t.processed=(t.processed||0)+ids.length;
-          st.totalProcessed=(st.totalProcessed||0)+ids.length;
-          await saveCleanupState(st);
-        }
-        t.nextPageToken=page.nextPageToken || "";
-        if(!t.nextPageToken) t.done=true;
-        await saveCleanupState(st);
-        setStatus("cleanupStatus",`FAST ${label}\nEmails processed: ${st.totalProcessed||0}\nFinished senders: ${st.targets.filter(x=>x.done).length}/${st.targets.length}`);
-        if(!ids.length && !t.nextPageToken) break;
+  const targets=[...selected].map(k=>senders[k]).filter(s=>s && s.bucket!=="safe");
+  let total=0, done=0;
+  for(const s of targets){
+    let token="";
+    while(true){
+      const page=await listIds(queryForSender(s), token);
+      const ids=(page.messages||[]).map(m=>m.id);
+      if(ids.length){
+        if(action==="archive") await batchModify(ids,[],["INBOX"]);
+        else await batchModify(ids,["TRASH"],[]);
+        total+=ids.length;
       }
-    });
-    if(cleanupPaused){
-      setStatus("cleanupStatus",`Paused safely. Saved after ${st.totalProcessed||0} emails. Tap Resume Saved Cleanup.`);
-    }else{
-      st.done=true; await saveCleanupState(st);
-      setStatus("cleanupStatus",`FAST CLEANUP COMPLETE\n${st.action==="archive"?"Archived":"Moved to Trash"} ${st.totalProcessed||0} emails from ${st.targets.length} senders.`);
+      token=page.nextPageToken||"";
+      setStatus("cleanupStatus",`${action==="archive"?"Archived":"Moved to Trash"} ${total} emails.\\nSender ${done+1}/${targets.length}: ${s.name}`);
+      if(!token) break;
     }
-  }catch(e){
-    setStatus("cleanupStatus",`Cleanup stopped safely. Progress saved.\n${e.message}\nTap Resume Saved Cleanup.`);
-  }finally{ cleanupRunning=false; }
+    done++;
+    if(user) await setDoc(doc(db,"users",user.uid,"cleanupHistory",s.key), {...s, action, processedAt:new Date().toISOString(), emailsProcessed:total},{merge:true});
+  }
+  setStatus("cleanupStatus",`Cleanup complete. ${action==="archive"?"Archived":"Moved to Trash"} ${total} emails from ${targets.length} senders.`);
 }
-
-async function saveUnsubscribeHistoryV10(record){
-  const key = "cs_unsubscribe_history_v10";
-  const arr = JSON.parse(localStorage.getItem(key) || "[]");
-  arr.push({...record, at:new Date().toISOString()});
-  localStorage.setItem(key, JSON.stringify(arr.slice(-5000)));
+async function sendMailto(mailto){
+  const url=mailto.replace(/^mailto:/i,""); const [toPart,qs]=url.split("?"); const params=new URLSearchParams(qs||"");
+  const raw=btoa(unescape(encodeURIComponent(`To: ${decodeURIComponent(toPart)}\\r\\nSubject: ${params.get("subject")||"Unsubscribe"}\\r\\n\\r\\n${params.get("body")||"Please unsubscribe me."}`))).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=+$/,"");
+  const res=await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send",{method:"POST",headers:{...authHeaders(),"Content-Type":"application/json"},body:JSON.stringify({raw})});
+  if(!res.ok) throw new Error(await res.text());
 }
-
-async function autoUnsubscribeSelectedV10(){
+async function unsubscribeQueue(){
   if(!accessToken){ setStatus("unsubStatus","Connect Gmail first."); return; }
-  const senders=await dbAll("senders");
-  const targets=senders.filter(s=>selected.has(s.key) && s.bucket!=="safe");
-  let completed=0, queued=0, manual=0, apiFailed=0;
-  setStatus("unsubStatus",`UNSUBSCRIBE STARTED\nProcessing ${targets.length} selected senders.\nNo popups will be opened.`);
-
-  await mapConcurrentV10(targets, CFG.UNSUBSCRIBE_CONCURRENCY || 6, async(s)=>{
-    let status="queued_backend_needed";
+  const targets=[...selected].map(k=>senders[k]).filter(s=>s && s.bucket!=="safe");
+  let complete=0, queued=0, manual=0, errors=0;
+  for(const s of targets){
+    let status="manual";
     try{
-      if(s.unsubMailto){
-        await sendMailtoUnsub(s.unsubMailto);
-        status="completed_mailto";
-        completed++;
-      }else if(s.unsubUrl){
-        // Browser cannot verify many unsubscribe websites because of CORS.
-        // This sends a best-effort request. If the browser blocks verification, we queue it instead of marking failed.
-        try{
-          await fetch(s.unsubUrl,{method:s.oneClick?"POST":"GET",mode:"no-cors",cache:"no-store"});
-          status="completed_or_submitted_unverified";
-          completed++;
-        }catch(e){
-          status="queued_backend_needed";
-          queued++;
-        }
-      }else{
-        status="manual_no_unsubscribe_header";
-        manual++;
-      }
-    }catch(e){
-      status="api_error_retry_needed";
-      apiFailed++;
-    }
-    await saveUnsubscribeHistoryV10({
-      sender:s.name||s.email||s.domain,
-      email:s.email||"",
-      domain:s.domain||"",
-      status,
-      url:s.unsubUrl||"",
-      mailto:s.unsubMailto||""
-    });
-    setStatus("unsubStatus",`UNSUBSCRIBE RUNNING\nProcessed: ${completed+queued+manual+apiFailed}/${targets.length}\nCompleted/submitted: ${completed}\nQueued for backend: ${queued}\nManual/no header: ${manual}\nAPI errors: ${apiFailed}\nNo browser popups opened.`);
-    await sleep(50);
-  });
-  setStatus("unsubStatus",`UNSUBSCRIBE COMPLETE\nProcessed: ${targets.length}\nCompleted/submitted: ${completed}\nQueued for backend automation: ${queued}\nManual/no header: ${manual}\nAPI errors: ${apiFailed}\nBlocked websites are queued, not falsely marked failed.`);
+      if(s.unsubMailto){ await sendMailto(s.unsubMailto); status="completed_mailto"; complete++; }
+      else if(s.unsubUrl){ try{ await fetch(s.unsubUrl,{method:s.oneClick?"POST":"GET",mode:"no-cors",cache:"no-store"}); status="submitted_unverified"; complete++; }catch{ status="backend_needed"; queued++; } }
+      else { manual++; }
+    }catch(e){ errors++; status="api_error"; }
+    if(user) await setDoc(doc(db,"users",user.uid,"unsubscribeHistory",s.key), {...s,status,processedAt:new Date().toISOString()},{merge:true});
+    setStatus("unsubStatus",`Processed ${complete+queued+manual+errors}/${targets.length}\\nCompleted/submitted: ${complete}\\nQueued backend/manual: ${queued+manual}\\nAPI errors: ${errors}`);
+  }
 }
 
-setTimeout(()=>{
-  const del=$("deleteSelectedEmailsBtn"), arc=$("archiveSelectedEmailsBtn"), res=$("resumeCleanupBtn"), unsub=$("unsubscribeBtn");
-  if(del) del.onclick=()=>runSenderEmailCleanupV10("trash",false);
-  if(arc) arc.onclick=()=>runSenderEmailCleanupV10("archive",false);
-  if(res) res.onclick=()=>{const st=loadCleanupState();runSenderEmailCleanupV10(st.action||"trash",true);};
-  if(unsub) unsub.onclick=()=>autoUnsubscribeSelectedV10();
-  const h=document.querySelector("h1"); if(h) h.textContent="V10 Fast Cleanup + Correct Status";
-},500);
+function exportBackup(){
+  const data={version:"CleanSlate Pro Backup", exportedAt:new Date().toISOString(), senders, selected:[...selected], scanState:scanState()};
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download="cleanslate-backup.json"; a.click(); URL.revokeObjectURL(url);
+}
+function importBackup(file){
+  const r=new FileReader(); r.onload=()=>{ const data=JSON.parse(r.result); senders=data.senders||{}; selected=new Set(data.selected||[]); localStorage.setItem("cs_senders_cache",JSON.stringify(senders)); renderSenders(); bulkSaveFirebase();}; r.readAsText(file);
+}
+
+$("firebaseLoginBtn").onclick=firebaseLogin;
+$("gmailLoginBtn").onclick=()=> tokenClient?.requestAccessToken({prompt:"select_account consent"});
+$("logoutBtn").onclick=async()=>{ accessToken=""; localStorage.removeItem("cs_gmail_token"); await signOut(auth); updateAuth(); };
+$("scanBtn").onclick=scan;
+$("pauseBtn").onclick=()=>{ scanPaused=true; setStatus("scanStatus","Pausing after current batch..."); };
+$("syncBtn").onclick=loadFirebaseSenders;
+$("selectUnsafeBtn").onclick=()=>{ Object.values(senders).forEach(s=>{ if(s.bucket!=="safe" && (s.unsubUrl||s.unsubMailto)) selected.add(s.key); }); renderSenders(); };
+$("clearBtn").onclick=()=>{ selected.clear(); renderSenders(); };
+$("saveQueueBtn").onclick=saveQueue;
+$("exportBtn").onclick=exportBackup;
+$("importFile").onchange=e=>{ if(e.target.files[0]) importBackup(e.target.files[0]); };
+$("deleteBtn").onclick=()=>runCleanup("trash");
+$("archiveBtn").onclick=()=>runCleanup("archive");
+$("resumeCleanupBtn").onclick=()=>runCleanup("trash");
+$("unsubscribeBtn").onclick=unsubscribeQueue;
+
+updateAuth(); updateStats(); renderSenders();

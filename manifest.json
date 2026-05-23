@@ -1,9 +1,9 @@
 {
-  "name": "CleanSlate",
-  "short_name": "CleanSlate",
-  "start_url": "/",
-  "display": "standalone",
-  "background_color": "#07111f",
-  "theme_color": "#0f766e",
-  "icons": []
+  "name":"CleanSlate Pro",
+  "short_name":"CleanSlate",
+  "start_url":"/",
+  "display":"standalone",
+  "background_color":"#07111f",
+  "theme_color":"#0f766e",
+  "icons":[]
 }
