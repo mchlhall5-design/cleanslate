@@ -286,7 +286,11 @@ function saveScanState(state) {
 }
 
 async function scanMailbox() {
-  if (scanRunning) return;
+  if (scanRunning) {
+    setStatus("scanStatus", "Scan is already running. Tap Pause Scan to stop it.");
+    return;
+  }
+
   if (!accessToken) {
     setStatus("scanStatus", "Connect Gmail Access first.");
     return;
@@ -304,6 +308,8 @@ async function scanMailbox() {
   try {
     while (!scanPaused) {
       const pageToken = state.nextPageToken ? `&pageToken=${encodeURIComponent(state.nextPageToken)}` : "";
+      setStatus("scanStatus", `Scanning page ${state.pages + 1}...\nSaved at ${state.total} emails.\nTap Pause once to stop after the current small batch.`);
+
       const page = await gmailFetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${CFG.MAX_LIST_PAGE_SIZE || 500}${pageToken}`);
       const messages = page.messages || [];
 
@@ -313,16 +319,34 @@ async function scanMailbox() {
       }
 
       let index = 0;
+      let processedThisPage = 0;
+
       const workers = Array.from({ length: CFG.MESSAGE_FETCH_CONCURRENCY || 6 }, async () => {
-        while (index < messages.length && !scanPaused) {
-          const message = messages[index++];
+        while (!scanPaused) {
+          const currentIndex = index++;
+          if (currentIndex >= messages.length) break;
+
+          const message = messages[currentIndex];
+
           try {
             const full = await gmailFetch(
               `https://gmail.googleapis.com/gmail/v1/users/me/messages/${message.id}?format=metadata&metadataHeaders=From&metadataHeaders=List-Unsubscribe&metadataHeaders=List-Unsubscribe-Post`
             );
+
+            if (scanPaused) break;
+
             const headers = full.payload?.headers || [];
             const from = header(headers, "From");
             if (from) await upsertSender(from, headers);
+
+            processedThisPage += 1;
+
+            if (processedThisPage % 25 === 0) {
+              const liveState = { ...state, total: state.total + processedThisPage };
+              updateStats(liveState);
+              setStatus("scanStatus", `Scanning...\nProcessed ${state.total + processedThisPage} emails.\nPause requested: ${scanPaused ? "yes" : "no"}`);
+              await sleep(1);
+            }
           } catch (error) {
             console.warn(error);
           }
@@ -331,17 +355,24 @@ async function scanMailbox() {
 
       await Promise.all(workers);
 
-      state.total += messages.length;
-      state.pages += 1;
-      state.nextPageToken = page.nextPageToken || "";
+      state.total += processedThisPage;
+
+      // Only advance the Gmail page token if the full page was actually processed.
+      // If paused mid-page, keep the same page token so resume does not skip emails.
+      if (!scanPaused && processedThisPage >= messages.length) {
+        state.pages += 1;
+        state.nextPageToken = page.nextPageToken || "";
+      }
 
       saveScanState(state);
       updateStats(state);
+      renderSenders();
 
-      if (state.pages % 2 === 0) {
-        renderSenders();
+      if (!scanPaused && state.pages % 2 === 0) {
         await bulkSaveFirebase();
       }
+
+      if (scanPaused) break;
 
       if (!state.nextPageToken) {
         state.done = true;
@@ -613,7 +644,7 @@ function bindButtons() {
   bind("scanBtn", scanMailbox);
   bind("pauseBtn", () => {
     scanPaused = true;
-    setStatus("scanStatus", "Pausing after current batch...");
+    setStatus("scanStatus", "Pause requested. Stopping as soon as the active Gmail requests finish...");
   });
   bind("syncBtn", loadFirebaseSenders);
   bind("selectUnsafeBtn", () => {
