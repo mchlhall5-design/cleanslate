@@ -28,3 +28,5 @@ V8 added:
 - Uses Gmail batchModify in chunks
 - DELETE means move to Gmail Trash, not permanent erase
 - Safe/protected senders are excluded from delete/archive actions
+
+V10: Corrects unsubscribe status so browser-blocked sites become queued/backend needed, not false failures. Adds faster cleanup overrides.

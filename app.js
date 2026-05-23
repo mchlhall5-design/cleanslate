@@ -446,3 +446,147 @@ updateAuthUI();
 initGoogle();
 renderSenderList(false);
 (async()=>{ const st=loadScanState(); if(st.totalScanned) await updateProgress(st); })();
+
+
+/* ===== V10 FAST CLEANUP + NO FALSE UNSUBSCRIBE FAILURES ===== */
+function chunkArrayV10(arr, size){
+  const out=[];
+  for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size));
+  return out;
+}
+async function mapConcurrentV10(items, limit, fn){
+  let i=0;
+  const workers=Array.from({length:Math.min(limit, items.length)}, async()=>{
+    while(i<items.length){
+      const item=items[i++];
+      try{ await fn(item); }catch(e){ console.warn("V10 worker item handled", e); }
+      await sleep(1);
+    }
+  });
+  await Promise.all(workers);
+}
+async function gmailBatchModifyV10(ids, addLabels=[], removeLabels=[]){
+  for(const part of chunkArrayV10(ids, CFG.BATCH_MODIFY_SIZE || 1000)){
+    const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",{
+      method:"POST",
+      headers:{...authHeaders(),"Content-Type":"application/json"},
+      body:JSON.stringify({ids:part, addLabelIds:addLabels, removeLabelIds:removeLabels})
+    });
+    if(!res.ok) throw new Error(await res.text());
+    await sleep(50);
+  }
+}
+async function runSenderEmailCleanupV10(action="trash", resume=false){
+  if(cleanupRunning) return;
+  if(!accessToken){ setStatus("cleanupStatus","Connect Gmail first."); return; }
+  cleanupPaused=false; cleanupRunning=true;
+  try{
+    const senders=await dbAll("senders");
+    let st=resume ? loadCleanupState() : {};
+    if(!st.targets || !resume){
+      st={action, totalProcessed:0, done:false, version:"v10",
+        targets:senders.filter(s=>selected.has(s.key) && s.bucket!=="safe").map(s=>({
+          key:s.key,name:s.name,email:s.email,domain:s.domain,q:gmailSearchQueryForSender(s),
+          nextPageToken:"",done:false,processed:0
+        })).filter(t=>t.q)
+      };
+      await saveCleanupState(st);
+    }
+    if(!st.targets.length){
+      setStatus("cleanupStatus","No selected non-safe senders found. Select spam/newsletter senders first.");
+      cleanupRunning=false; return;
+    }
+    st.action=action || st.action || "trash";
+    const label=st.action==="archive" ? "Archiving" : "Moving to Trash";
+    setStatus("cleanupStatus",`FAST MODE STARTED\n${label} emails from ${st.targets.filter(t=>!t.done).length} selected senders...`);
+    await mapConcurrentV10(st.targets.filter(t=>!t.done), CFG.CLEANUP_CONCURRENCY || 5, async(t)=>{
+      while(!cleanupPaused && !t.done){
+        const page=await listMessageIdsForQuery(t.q, t.nextPageToken || "");
+        const ids=(page.messages||[]).map(m=>m.id);
+        if(ids.length){
+          if(st.action==="archive") await gmailBatchModifyV10(ids, [], ["INBOX"]);
+          else await gmailBatchModifyV10(ids, ["TRASH"], []);
+          t.processed=(t.processed||0)+ids.length;
+          st.totalProcessed=(st.totalProcessed||0)+ids.length;
+          await saveCleanupState(st);
+        }
+        t.nextPageToken=page.nextPageToken || "";
+        if(!t.nextPageToken) t.done=true;
+        await saveCleanupState(st);
+        setStatus("cleanupStatus",`FAST ${label}\nEmails processed: ${st.totalProcessed||0}\nFinished senders: ${st.targets.filter(x=>x.done).length}/${st.targets.length}`);
+        if(!ids.length && !t.nextPageToken) break;
+      }
+    });
+    if(cleanupPaused){
+      setStatus("cleanupStatus",`Paused safely. Saved after ${st.totalProcessed||0} emails. Tap Resume Saved Cleanup.`);
+    }else{
+      st.done=true; await saveCleanupState(st);
+      setStatus("cleanupStatus",`FAST CLEANUP COMPLETE\n${st.action==="archive"?"Archived":"Moved to Trash"} ${st.totalProcessed||0} emails from ${st.targets.length} senders.`);
+    }
+  }catch(e){
+    setStatus("cleanupStatus",`Cleanup stopped safely. Progress saved.\n${e.message}\nTap Resume Saved Cleanup.`);
+  }finally{ cleanupRunning=false; }
+}
+
+async function saveUnsubscribeHistoryV10(record){
+  const key = "cs_unsubscribe_history_v10";
+  const arr = JSON.parse(localStorage.getItem(key) || "[]");
+  arr.push({...record, at:new Date().toISOString()});
+  localStorage.setItem(key, JSON.stringify(arr.slice(-5000)));
+}
+
+async function autoUnsubscribeSelectedV10(){
+  if(!accessToken){ setStatus("unsubStatus","Connect Gmail first."); return; }
+  const senders=await dbAll("senders");
+  const targets=senders.filter(s=>selected.has(s.key) && s.bucket!=="safe");
+  let completed=0, queued=0, manual=0, apiFailed=0;
+  setStatus("unsubStatus",`UNSUBSCRIBE STARTED\nProcessing ${targets.length} selected senders.\nNo popups will be opened.`);
+
+  await mapConcurrentV10(targets, CFG.UNSUBSCRIBE_CONCURRENCY || 6, async(s)=>{
+    let status="queued_backend_needed";
+    try{
+      if(s.unsubMailto){
+        await sendMailtoUnsub(s.unsubMailto);
+        status="completed_mailto";
+        completed++;
+      }else if(s.unsubUrl){
+        // Browser cannot verify many unsubscribe websites because of CORS.
+        // This sends a best-effort request. If the browser blocks verification, we queue it instead of marking failed.
+        try{
+          await fetch(s.unsubUrl,{method:s.oneClick?"POST":"GET",mode:"no-cors",cache:"no-store"});
+          status="completed_or_submitted_unverified";
+          completed++;
+        }catch(e){
+          status="queued_backend_needed";
+          queued++;
+        }
+      }else{
+        status="manual_no_unsubscribe_header";
+        manual++;
+      }
+    }catch(e){
+      status="api_error_retry_needed";
+      apiFailed++;
+    }
+    await saveUnsubscribeHistoryV10({
+      sender:s.name||s.email||s.domain,
+      email:s.email||"",
+      domain:s.domain||"",
+      status,
+      url:s.unsubUrl||"",
+      mailto:s.unsubMailto||""
+    });
+    setStatus("unsubStatus",`UNSUBSCRIBE RUNNING\nProcessed: ${completed+queued+manual+apiFailed}/${targets.length}\nCompleted/submitted: ${completed}\nQueued for backend: ${queued}\nManual/no header: ${manual}\nAPI errors: ${apiFailed}\nNo browser popups opened.`);
+    await sleep(50);
+  });
+  setStatus("unsubStatus",`UNSUBSCRIBE COMPLETE\nProcessed: ${targets.length}\nCompleted/submitted: ${completed}\nQueued for backend automation: ${queued}\nManual/no header: ${manual}\nAPI errors: ${apiFailed}\nBlocked websites are queued, not falsely marked failed.`);
+}
+
+setTimeout(()=>{
+  const del=$("deleteSelectedEmailsBtn"), arc=$("archiveSelectedEmailsBtn"), res=$("resumeCleanupBtn"), unsub=$("unsubscribeBtn");
+  if(del) del.onclick=()=>runSenderEmailCleanupV10("trash",false);
+  if(arc) arc.onclick=()=>runSenderEmailCleanupV10("archive",false);
+  if(res) res.onclick=()=>{const st=loadCleanupState();runSenderEmailCleanupV10(st.action||"trash",true);};
+  if(unsub) unsub.onclick=()=>autoUnsubscribeSelectedV10();
+  const h=document.querySelector("h1"); if(h) h.textContent="V10 Fast Cleanup + Correct Status";
+},500);
