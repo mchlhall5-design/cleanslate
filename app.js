@@ -94,7 +94,7 @@ function extractUnsub(headers){
   const one=!!header(headers,"List-Unsubscribe-Post");
   const urls=[...[...(raw||"").matchAll(/<([^>]+)>/g)].map(x=>x[1]), ...(raw||"").split(",").map(x=>x.trim())].filter(Boolean);
   return {
-    url: urls.find(u=>/^https?:\\/\\//i.test(u) && !/example\\.com/i.test(u)) || "",
+    url: urls.find(u=>/^https?:\/\//i.test(u) && !/example\\.com/i.test(u)) || "",
     mailto: urls.find(u=>/^mailto:/i.test(u)) || "",
     oneClick: one
   };
@@ -205,7 +205,15 @@ function renderSenders(){
   }).join("");
   document.querySelectorAll("input[data-key]").forEach(cb=>cb.onchange=()=>{ cb.checked?selected.add(cb.dataset.key):selected.delete(cb.dataset.key); $("selectedCount").textContent=selected.size; });
 }
-function escapeHtml(s){return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#039;"}[c]));}
+function escapeHtml(s){
+  return String(s || "").replace(/[&<>"']/g, ch => ({
+    "&":"&amp;",
+    "<":"&lt;",
+    ">":"&gt;",
+    '"':"&quot;",
+    "'":"&#039;"
+  }[ch]));
+}
 async function saveQueue(){
   if(!user){ setStatus("cleanupStatus","Sign in with Firebase first."); return; }
   const arr=[...selected].map(k=>senders[k]).filter(Boolean);
