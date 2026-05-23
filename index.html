@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
   <title>CleanSlate Pro</title>
   <link rel="stylesheet" href="styles.css"/>
-  <script src="config.js?v=renderoauthfinal1"></script>
+  <script src="config.js?v=speedpercent1"></script>
 </head>
 <body>
 <main class="app">
@@ -13,14 +13,13 @@
     <div class="logo">CS</div>
     <div>
       <p class="eyebrow">CleanSlate Pro</p>
-      <h1>Render OAuth Background Scanner</h1>
-      <p class="sub">Render owns Gmail access. No OAuth Playground. No phone-based Gmail scan.</p>
+      <h1>Background Gmail Scanner</h1>
+      <p class="sub">Render scans, finds senders, unsubscribes, and deletes in the background.</p>
     </div>
   </section>
 
   <section class="panel">
     <h2>1. Sign In</h2>
-    <p class="muted">Firebase login connects this dashboard to your saved CleanSlate data.</p>
     <button id="firebaseLoginBtn" class="primary">Sign In With Firebase Google</button>
     <button id="logoutBtn" class="ghost">Logout</button>
     <div id="authStatus" class="status">Loading...</div>
@@ -28,24 +27,34 @@
 
   <section class="panel">
     <h2>2. Connect Gmail To Render</h2>
-    <p class="muted">This creates the correct server-side Gmail token directly on Render. Do this once.</p>
     <button id="connectRenderGmailBtn" class="primary alt">Connect Gmail To Render Worker</button>
     <button id="checkWorkerBtn" class="ghost">Check Worker Connection</button>
     <div id="gmailStatus" class="status">Not checked yet.</div>
   </section>
 
   <section class="panel sticky">
-    <h2>3. Background Gmail Scan</h2>
-    <p class="muted">This runs on Render, not your phone browser.</p>
+    <h2>3. Background Scan</h2>
     <div class="toolbar">
       <button id="startServerScanBtn" class="primary">Start / Resume Background Scan</button>
       <button id="pauseServerScanBtn" class="warning">Pause Background Scan</button>
       <button id="resetServerScanBtn" class="danger">Reset Scan Progress</button>
       <button id="refreshBtn" class="ghost">Refresh Dashboard</button>
     </div>
+
+    <h3>Scanner Speed</h3>
+    <div class="toolbar">
+      <button id="speedSafeBtn" class="ghost">Safe Speed</button>
+      <button id="speedFastBtn" class="primary">Fast Speed</button>
+      <button id="speedMaxBtn" class="danger">MAX Scanner Speed</button>
+    </div>
+
     <div class="progress"><span id="progressFill"></span></div>
     <div class="stats">
+      <span id="percentCount">0%</span>
       <span id="emailCount">0 scanned</span>
+      <span id="totalEstimate">Total: estimating</span>
+      <span id="speedDisplay">Speed: --</span>
+      <span id="etaDisplay">ETA: --</span>
       <span id="senderCount">0 senders</span>
       <span id="pageCount">0 pages</span>
       <span id="workerState">Worker: checking</span>
@@ -54,8 +63,7 @@
   </section>
 
   <section class="panel">
-    <h2>4. Sender Review</h2>
-    <p class="muted">Important senders stay pinned as KEEP SAFE. Cleanup senders can be queued for background processing.</p>
+    <h2>4. Sender Review / Cleanup</h2>
     <div class="toolbar">
       <button id="selectCleanupBtn" class="primary">Select Cleanup Senders</button>
       <button id="clearSelectedBtn" class="ghost">Clear Selected</button>
@@ -70,12 +78,12 @@
   </section>
 
   <section class="panel">
-    <h2>5. Worker Status</h2>
+    <h2>5. Cleanup Worker</h2>
     <button id="triggerWorkerBtn" class="danger">Run Cleanup Worker Now</button>
     <button id="queueStatusBtn" class="ghost">Check Queue Status</button>
     <div id="cleanupStatus" class="status">Worker status will show here.</div>
   </section>
 </main>
-<script type="module" src="app.js?v=renderoauthfinal1"></script>
+<script type="module" src="app.js?v=speedpercent1"></script>
 </body>
 </html>

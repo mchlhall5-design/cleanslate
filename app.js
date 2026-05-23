@@ -35,19 +35,46 @@ async function checkWorker(){
   try{
     const data=await workerFetch("/status");
     $("workerState").textContent=`Worker: ${data.hasFirebase && data.hasGoogleClient && data.hasUser ? "ready" : "not ready"}`;
-    setStatus("gmailStatus",`Render worker:\nFirebase: ${data.hasFirebase?"connected":"missing"}\nGoogle OAuth Client: ${data.hasGoogleClient?"connected":"missing"}\nStored Gmail token: ${data.hasStoredGmailToken?"connected":"missing"}\nUser: ${data.hasUser?"connected":"missing"}\nCallback URI: ${data.oauthCallback||""}`);
-    setStatus("cleanupStatus",`Worker status:\nScan active: ${data.scanActive?"yes":"no"}\nCleanup active: ${data.cleanupActive?"yes":"no"}`);
+    setStatus("gmailStatus",`Render worker:\nFirebase: ${data.hasFirebase?"connected":"missing"}\nGoogle OAuth Client: ${data.hasGoogleClient?"connected":"missing"}\nStored Gmail token: ${data.hasStoredGmailToken?"connected":"missing"}\nUser: ${data.hasUser?"connected":"missing"}\nScan active: ${data.scanActive?"yes":"no"}\nSpeed mode: ${data.speedMode||"unknown"}\nCallback URI: ${data.oauthCallback||""}`);
+    setStatus("cleanupStatus",`Worker status:\nScan active: ${data.scanActive?"yes":"no"}\nCleanup active: ${data.cleanupActive?"yes":"no"}\nSpeed: ${data.speedMode||"unknown"}`);
     return data;
   }catch(e){ $("workerState").textContent="Worker: unreachable"; setStatus("gmailStatus","Worker unreachable:\n"+(e.message||e)); }
+}
+async function setSpeed(mode){
+  try{
+    const data = await workerFetch("/scan/speed", {method:"POST", body:JSON.stringify({mode})});
+    setStatus("scanStatus", `Speed changed to ${data.speedMode}.\nConcurrency: ${data.settings.concurrency}\nDelay: ${data.settings.messageDelayMs}ms\nPages per cycle: ${data.settings.maxPagesPerCycle}`);
+    await refreshDashboard();
+  }catch(e){ setStatus("scanStatus","Speed change failed:\n"+(e.message||e)); }
 }
 async function startServerScan(){ try{ setStatus("scanStatus","Starting Render background scan..."); const d=await workerFetch("/scan/start",{method:"POST",body:JSON.stringify({continueExisting:true})}); setStatus("scanStatus",`Background scan started.\n${JSON.stringify(d,null,2)}`); await refreshDashboard(); }catch(e){ setStatus("scanStatus","Start scan failed:\n"+(e.message||e)); } }
 async function pauseServerScan(){ try{ const d=await workerFetch("/scan/pause",{method:"POST",body:"{}"}); setStatus("scanStatus",`Background scan pause requested.\n${JSON.stringify(d,null,2)}`); await refreshDashboard(); }catch(e){ setStatus("scanStatus","Pause failed:\n"+(e.message||e)); } }
 async function resetServerScan(){ if(!confirm("Reset scan progress?"))return; try{ const d=await workerFetch("/scan/reset",{method:"POST",body:"{}"}); setStatus("scanStatus",`Scan reset.\n${JSON.stringify(d,null,2)}`); await refreshDashboard(); }catch(e){ setStatus("scanStatus","Reset failed:\n"+(e.message||e)); } }
+function fmtEta(seconds){ if(!seconds || !isFinite(seconds) || seconds < 0) return "--"; if(seconds < 60) return `${Math.round(seconds)} sec`; const m=Math.round(seconds/60); if(m<60)return `${m} min`; return `${Math.floor(m/60)}h ${m%60}m`; }
 async function loadScanState(){
   if(!user)return;
   const snap=await getDoc(doc(db,"users",user.uid,"state","scan")); const s=snap.exists()?snap.data():{};
-  $("emailCount").textContent=`${s.total||0} scanned`; $("pageCount").textContent=`${s.pages||0} pages`; $("progressFill").style.width=s.done?"100%":`${Math.min(98,((s.pages||0)%50)*2)}%`;
-  setStatus("scanStatus",`Server scan state:\nTotal scanned: ${s.total||0}\nPages: ${s.pages||0}\nDone: ${s.done?"yes":"no"}\nRunning: ${s.running?"yes":"no"}\nLast update: ${s.updatedAt||"none"}${s.lastError ? "\n\nLast worker error:\n"+s.lastError : ""}`);
+  const total = Number(s.estimatedTotal || s.messagesTotal || 0);
+  const scanned = Number(s.total || 0);
+  const pct = total ? Math.min(100, Math.round((scanned / total) * 1000) / 10) : 0;
+  $("emailCount").textContent=`${scanned.toLocaleString()} scanned`;
+  $("totalEstimate").textContent= total ? `Total: ${total.toLocaleString()}` : "Total: estimating";
+  $("percentCount").textContent= total ? `${pct}%` : "estimating";
+  $("progressFill").style.width = total ? `${pct}%` : `${Math.min(98, ((s.pages||0)%50)*2)}%`;
+  $("pageCount").textContent=`${s.pages||0} pages`;
+  $("speedDisplay").textContent=`Speed: ${s.emailsPerMinute ? Math.round(s.emailsPerMinute).toLocaleString()+"/min" : "--"}`;
+  $("etaDisplay").textContent=`ETA: ${fmtEta(s.etaSeconds)}`;
+  setStatus("scanStatus",`Server scan state:
+Total scanned: ${scanned.toLocaleString()}
+Estimated total: ${total ? total.toLocaleString() : "estimating"}
+Percent: ${total ? pct+"%" : "estimating"}
+Speed mode: ${s.speedMode || "not set"}
+Speed: ${s.emailsPerMinute ? Math.round(s.emailsPerMinute).toLocaleString()+" emails/min" : "--"}
+ETA: ${fmtEta(s.etaSeconds)}
+Pages: ${s.pages||0}
+Done: ${s.done?"yes":"no"}
+Running: ${s.running?"yes":"no"}
+Last update: ${s.updatedAt||"none"}${s.lastError ? "\n\nLast worker message:\n"+s.lastError : ""}`);
 }
 async function loadSenders(){
   if(!user)return;
@@ -73,8 +100,9 @@ async function refreshDashboard(){ await checkWorker(); await loadScanState(); a
 function bind(){
  $("firebaseLoginBtn").onclick=firebaseLogin; $("logoutBtn").onclick=()=>signOut(auth); $("connectRenderGmailBtn").onclick=connectRenderGmail; $("checkWorkerBtn").onclick=checkWorker;
  $("startServerScanBtn").onclick=startServerScan; $("pauseServerScanBtn").onclick=pauseServerScan; $("resetServerScanBtn").onclick=resetServerScan; $("refreshBtn").onclick=refreshDashboard;
+ $("speedSafeBtn").onclick=()=>setSpeed("safe"); $("speedFastBtn").onclick=()=>setSpeed("fast"); $("speedMaxBtn").onclick=()=>setSpeed("max");
  $("selectCleanupBtn").onclick=()=>{Object.values(senders).forEach(s=>{if(s.bucket==="cleanup")selected.add(s.key)});renderSenders();}; $("clearSelectedBtn").onclick=()=>{selected.clear();renderSenders();};
  $("saveQueueBtn").onclick=saveQueue; $("triggerWorkerBtn").onclick=triggerWorker; $("queueStatusBtn").onclick=loadQueueStatus;
 }
 onAuthStateChanged(auth, async u=>{ user=u; if(user) await setDoc(doc(db,"users",user.uid),{email:user.email,updatedAt:new Date().toISOString()},{merge:true}); updateAuth(); await refreshDashboard(); });
-bind(); handleRedirectResult(); updateAuth(); checkWorker(); setInterval(refreshDashboard,15000);
+bind(); handleRedirectResult(); updateAuth(); checkWorker(); setInterval(refreshDashboard,10000);
