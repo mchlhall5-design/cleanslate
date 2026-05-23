@@ -4,8 +4,8 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
   <title>CleanSlate Pro</title>
-  <link rel="stylesheet" href="styles.css"/>
-  <script src="config.js?v=speedpercent1"></script>
+  <link rel="stylesheet" href="styles.css?v=fixscroll999"/>
+  <script src="config.js?v=fixscroll999"></script>
 </head>
 <body>
 <main class="app">
@@ -32,7 +32,7 @@
     <div id="gmailStatus" class="status">Not checked yet.</div>
   </section>
 
-  <section class="panel sticky">
+  <section class="panel scan-panel sticky">
     <h2>3. Background Scan</h2>
     <div class="toolbar">
       <button id="startServerScanBtn" class="primary">Start / Resume Background Scan</button>
@@ -59,7 +59,7 @@
       <span id="pageCount">0 pages</span>
       <span id="workerState">Worker: checking</span>
     </div>
-    <div id="scanStatus" class="status">Ready.</div>
+    <div id="scanStatus" class="status scan-status-box">Ready.</div>
   </section>
 
   <section class="panel">
@@ -84,6 +84,6 @@
     <div id="cleanupStatus" class="status">Worker status will show here.</div>
   </section>
 </main>
-<script type="module" src="app.js?v=speedpercent1"></script>
+<script type="module" src="app.js?v=fixscroll999"></script>
 </body>
 </html>
