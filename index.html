@@ -22,13 +22,63 @@
 
   <section class="panel">
     <h2>1. Sign In</h2>
+    <p class="muted">Firebase saves your CleanSlate history. Google OAuth gives Gmail access.</p>
     <button id="firebaseLoginBtn" class="primary">Sign In With Firebase Google</button>
     <button id="gmailLoginBtn" class="primary alt">Connect Gmail Access</button>
     <button id="logoutBtn" class="ghost">Logout</button>
-    <div id="authStatus" class="status">App loaded. Tap Firebase Google sign-in.</div>
+    <div id="authStatus" class="status">Not connected.</div>
   </section>
 
-  <script type="module" src="app.js?v=pro2"></script>
+  <section class="panel sticky">
+    <h2>2. Full Mailbox Scan</h2>
+    <p class="muted">Progress saves to Firebase and local storage. Important-looking senders are pinned as KEEP SAFE.</p>
+    <button id="scanBtn" class="primary">Start / Resume Scan</button>
+    <button id="pauseBtn" class="warning">Pause Scan</button>
+    <button id="syncBtn" class="ghost">Sync From Firebase</button>
+    <div class="progress"><span id="progressFill"></span></div>
+    <div class="stats">
+      <span id="emailCount">0 emails</span>
+      <span id="senderCount">0 senders</span>
+      <span id="pageCount">0 pages</span>
+    </div>
+    <div id="scanStatus" class="status"></div>
+  </section>
+
+  <section class="panel">
+    <h2>3. Review Senders</h2>
+    <p class="muted">SAFE senders cannot be selected for delete/unsubscribe. Use these buttons to build a permanent cleanup queue.</p>
+    <div class="toolbar">
+      <button id="selectUnsafeBtn" class="primary">Select Unsafe With Links</button>
+      <button id="clearBtn" class="ghost">Clear</button>
+      <button id="saveQueueBtn" class="warning">Save Selected To Firebase Queue</button>
+      <button id="exportBtn" class="ghost">Export Backup</button>
+      <label class="fileBtn">Import Backup<input id="importFile" type="file" accept="application/json"/></label>
+    </div>
+    <div class="miniCards">
+      <div><b id="selectedCount">0</b><span>Selected</span></div>
+      <div><b id="safeCount">0</b><span>Keep Safe</span></div>
+      <div><b id="unsafeCount">0</b><span>Cleanup</span></div>
+    </div>
+    <div id="senderList" class="senderList"></div>
+  </section>
+
+  <section class="panel">
+    <h2>4. Delete / Archive Existing Emails</h2>
+    <p class="muted">Moves messages to Gmail Trash or archives them in safe batches. Uses selected senders or saved Firebase queue.</p>
+    <button id="deleteBtn" class="danger">Delete Emails From Selected / Queue</button>
+    <button id="archiveBtn" class="warning">Archive Emails From Selected / Queue</button>
+    <button id="resumeCleanupBtn" class="primary">Resume Cleanup</button>
+    <div id="cleanupStatus" class="status"></div>
+  </section>
+
+  <section class="panel">
+    <h2>5. Unsubscribe Queue</h2>
+    <p class="muted">Browser-safe unsubscribe attempts run without opening popup storms. Blocked websites are saved as backend/manual-needed jobs.</p>
+    <button id="unsubscribeBtn" class="danger">Process Unsubscribe Queue</button>
+    <div id="unsubStatus" class="status"></div>
+  </section>
 </main>
+
+<script type="module" src="app.js?v=pro2"></script>
 </body>
 </html>
