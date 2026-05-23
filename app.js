@@ -102,7 +102,7 @@ async function checkWorker() {
 async function startServerScan() {
   setStatus("scanStatus", "Starting Render background scan...");
   try {
-    const data = await workerFetch("/scan/start", { method: "POST", body: "{}" });
+    const data = await workerFetch("/scan/start", { method: "POST", body: JSON.stringify({ continueExisting: true }) });
     setStatus("scanStatus", `Background scan started.\n${JSON.stringify(data, null, 2)}`);
     await refreshDashboard();
   } catch (error) {
@@ -140,7 +140,12 @@ async function loadScanState() {
   const pageCounter = $("pageCount");
   if (pageCounter) pageCounter.textContent = `${state.pages || 0} pages`;
   $("progressFill").style.width = state.done ? "100%" : `${Math.min(98, ((state.pages || 0) % 50) * 2)}%`;
-  setStatus("scanStatus", `Server scan state:\nTotal scanned: ${state.total || 0}\nPages: ${state.pages || 0}\nDone: ${state.done ? "yes" : "no"}\nRunning: ${state.running ? "yes" : "no"}\nLast update: ${state.updatedAt || "none"}`);
+  setStatus("scanStatus", `Server scan state:
+Total scanned: ${state.total || 0}
+Pages: ${state.pages || 0}
+Done: ${state.done ? "yes" : "no"}
+Running: ${state.running ? "yes" : "no"}
+Last update: ${state.updatedAt || "none"}${state.lastError ? "\n\nLast worker error:\n" + state.lastError : ""}`);
   return state;
 }
 

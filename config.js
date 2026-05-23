@@ -1,5 +1,5 @@
 window.CLEANSATE_CONFIG = {
-  APP_VERSION: "CleanSlate Server-Side Complete V1.3 Fixed",
+  APP_VERSION: "CleanSlate Server-Side Fast Fix V1",
   GOOGLE_CLIENT_ID: "512137679024-o2b1stjgp7lhpc8pj53v016q5cqkbc1k.apps.googleusercontent.com",
   FIREBASE: {
     apiKey: "AIzaSyDlY_ZKDAbTCAvLwJksuQ03vMUN6TNGgd4",
