@@ -4,10 +4,8 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
   <title>CleanSlate Pro</title>
-  <link rel="manifest" href="manifest.json"/>
   <link rel="stylesheet" href="styles.css"/>
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="config.js?v=reset2"></script>
+  <script src="config.js?v=servercomplete1"></script>
 </head>
 <body>
 <main class="app">
@@ -15,65 +13,61 @@
     <div class="logo">CS</div>
     <div>
       <p class="eyebrow">CleanSlate Pro</p>
-      <h1>CleanSlate Full Reset Build</h1>
-      <p class="sub">Firebase login, Gmail access, saved scan progress, and Render worker connection.</p>
+      <h1>Server-Side Background Scanner</h1>
+      <p class="sub">Render scans Gmail in the background. Your phone can lock and the scan continues.</p>
     </div>
   </section>
 
   <section class="panel">
     <h2>1. Sign In</h2>
-    <p class="muted">Firebase saves your CleanSlate history. Gmail access lets the app scan and clean your mailbox.</p>
+    <p class="muted">Firebase login connects the dashboard to your saved CleanSlate data.</p>
     <button id="firebaseLoginBtn" class="primary">Sign In With Firebase Google</button>
-    <button id="gmailLoginBtn" class="primary alt">Connect Gmail Access</button>
     <button id="logoutBtn" class="ghost">Logout</button>
-    <div id="authStatus" class="status">Loading app...</div>
+    <div id="authStatus" class="status">Loading...</div>
   </section>
 
   <section class="panel sticky">
-    <h2>2. Full Mailbox Scan</h2>
-    <button id="scanBtn" class="primary">Start / Resume Scan</button>
-    <button id="pauseBtn" class="warning">Pause Scan</button>
-    <button id="syncBtn" class="ghost">Sync From Firebase</button>
+    <h2>2. Background Gmail Scan</h2>
+    <p class="muted">This now runs on Render, not your phone browser.</p>
+    <div class="toolbar">
+      <button id="startServerScanBtn" class="primary">Start / Resume Background Scan</button>
+      <button id="pauseServerScanBtn" class="warning">Pause Background Scan</button>
+      <button id="resetServerScanBtn" class="danger">Reset Scan Progress</button>
+      <button id="refreshBtn" class="ghost">Refresh Dashboard</button>
+    </div>
     <div class="progress"><span id="progressFill"></span></div>
     <div class="stats">
-      <span id="emailCount">0 emails</span>
+      <span id="emailCount">0 scanned</span>
       <span id="senderCount">0 senders</span>
-      <span id="pageCount">0 pages</span>
+      <span id="workerState">Worker: checking</span>
     </div>
     <div id="scanStatus" class="status">Ready.</div>
   </section>
 
   <section class="panel">
-    <h2>3. Review Senders</h2>
+    <h2>3. Sender Review</h2>
+    <p class="muted">Important senders stay pinned as KEEP SAFE. Cleanup senders can be queued for background delete/unsubscribe.</p>
     <div class="toolbar">
-      <button id="selectUnsafeBtn" class="primary">Select Unsafe With Links</button>
-      <button id="clearBtn" class="ghost">Clear</button>
-      <button id="saveQueueBtn" class="warning">Save Selected To Firebase Queue</button>
-      <button id="exportBtn" class="ghost">Export Backup</button>
-      <label class="fileBtn">Import Backup<input id="importFile" type="file" accept="application/json"/></label>
+      <button id="selectCleanupBtn" class="primary">Select Cleanup Senders</button>
+      <button id="clearSelectedBtn" class="ghost">Clear Selected</button>
+      <button id="saveQueueBtn" class="warning">Queue Selected For Background Cleanup</button>
     </div>
     <div class="miniCards">
       <div><b id="selectedCount">0</b><span>Selected</span></div>
       <div><b id="safeCount">0</b><span>Keep Safe</span></div>
-      <div><b id="unsafeCount">0</b><span>Cleanup</span></div>
+      <div><b id="cleanupCount">0</b><span>Cleanup</span></div>
     </div>
     <div id="senderList" class="senderList"></div>
   </section>
 
   <section class="panel">
-    <h2>4. Worker / Cleanup Status</h2>
-    <button id="workerStatusBtn" class="primary">Check Render Worker</button>
-    <button id="triggerWorkerBtn" class="danger">Trigger Worker Now</button>
+    <h2>4. Worker Status</h2>
+    <button id="triggerWorkerBtn" class="danger">Run Cleanup Worker Now</button>
+    <button id="queueStatusBtn" class="ghost">Check Queue Status</button>
     <div id="cleanupStatus" class="status">Worker status will show here.</div>
-  </section>
-
-  <section class="panel">
-    <h2>5. Unsubscribe Status</h2>
-    <button id="unsubscribeBtn" class="danger">Save Selected + Trigger Worker</button>
-    <div id="unsubStatus" class="status">Ready.</div>
   </section>
 </main>
 
-<script type="module" src="app.js?v=reset2"></script>
+<script type="module" src="app.js?v=servercomplete1"></script>
 </body>
 </html>
