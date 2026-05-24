@@ -82,17 +82,23 @@ async function loadSenders(){
   senders={}; snap.forEach(x=>senders[x.id]=x.data()); renderSenders();
 }
 function renderSenders(){
-  const vals=Object.values(senders).sort((a,b)=>({safe:0,cleanup:1,review:2}[a.bucket]??9)-({safe:0,cleanup:1,review:2}[b.bucket]??9)||(b.count||0)-(a.count||0));
+  const vals=Object.values(senders).sort((a,b)=>({cleanup:0,review:1,safe:2}[a.bucket]??9)-({cleanup:0,review:1,safe:2}[b.bucket]??9)||(b.cleanupScore||0)-(a.cleanupScore||0)||(b.count||0)-(a.count||0));
   $("senderCount").textContent=`${vals.length} senders`; $("safeCount").textContent=vals.filter(s=>s.bucket==="safe").length; $("cleanupCount").textContent=vals.filter(s=>s.bucket==="cleanup").length; $("selectedCount").textContent=selected.size;
-  $("senderList").innerHTML=vals.map(s=>`<div class="sender ${s.bucket||"review"}"><input type="checkbox" data-key="${esc(s.key)}" ${selected.has(s.key)?"checked":""} ${s.bucket!=="safe"?"":"disabled"}><div><div class="title">${esc(s.name||s.email||s.domain)}</div><div class="meta">${esc(s.email||s.domain||"")} • ${s.count||0} emails ${s.unsubUrl||s.unsubMailto?"• unsubscribe link":""}</div></div><div class="pill">${s.bucket==="safe"?"KEEP SAFE":s.bucket==="cleanup"?"CLEANUP":"REVIEW"}</div></div>`).join("");
+  $("senderList").innerHTML=vals.map(s=>`<div class="sender ${s.bucket||"review"}"><input type="checkbox" data-key="${esc(s.key)}" ${selected.has(s.key)?"checked":""} ${s.bucket!=="safe"?"":"disabled"}><div><div class="title">${esc(s.name||s.email||s.domain)}</div><div class="meta">${esc(s.email||s.domain||"")} • ${(s.count||0).toLocaleString()} emails • score ${s.cleanupScore||0} • ${s.confidence||""} ${s.unsubUrl||s.unsubMailto?"• unsubscribe link":""}</div></div><div class="pill">${s.bucket==="safe"?"KEEP SAFE":s.bucket==="cleanup"?"CLEANUP":"REVIEW"}</div></div>`).join("");
   document.querySelectorAll("input[data-key]").forEach(cb=>cb.onchange=()=>{ cb.checked?selected.add(cb.dataset.key):selected.delete(cb.dataset.key); $("selectedCount").textContent=selected.size; });
 }
-async function saveQueue(){
+async function queueAction(action){
   if(!user)return setStatus("cleanupStatus","Sign in first.");
   const targets=[...selected].map(k=>senders[k]).filter(Boolean);
   if(!targets.length)return setStatus("cleanupStatus","No senders selected.");
-  for(let i=0;i<targets.length;i+=450){ const batch=writeBatch(db); targets.slice(i,i+450).forEach(s=>batch.set(doc(db,"users",user.uid,"cleanupQueue",s.key),{...s,status:"queued",workerStatus:"queued",action:"unsubscribe_and_delete",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()},{merge:true})); await batch.commit(); }
-  setStatus("cleanupStatus",`Queued ${targets.length} senders. Triggering worker...`); await triggerWorker();
+  const est=targets.reduce((s,x)=>s+Number(x.count||0),0);
+  if(!confirm(`Queue ${targets.length} senders / about ${est.toLocaleString()} emails?\nAction: ${action}\n\nTrash moves to Gmail Trash only. It is not permanent delete.`)) return;
+  for(let i=0;i<targets.length;i+=450){ const batch=writeBatch(db); targets.slice(i,i+450).forEach(s=>batch.set(doc(db,"users",user.uid,"cleanupQueue",s.key),{...s,status:"queued",workerStatus:"queued",action,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()},{merge:true})); await batch.commit(); }
+  setStatus("cleanupStatus",`Queued ${targets.length} senders for ${action}. Triggering worker...`); await triggerWorker();
+}
+async function rescoreSenders(){
+  try{setStatus("cleanupStatus","Re-scoring existing senders...");const d=await workerFetch("/tools/reclassify",{method:"POST",body:"{}"});setStatus("cleanupStatus",`Re-score complete.\nUpdated: ${d.updated}\nCleanup: ${d.cleanup}\nReview: ${d.review}\nSafe: ${d.safe}`);await refreshDashboard();}
+  catch(e){setStatus("cleanupStatus","Re-score failed:\n"+(e.message||e));}
 }
 async function triggerWorker(){ try{ const d=await workerFetch("/run-once",{method:"POST",body:"{}"}); setStatus("cleanupStatus",`Worker triggered.\nProcessed: ${d.processed||0}\nSkipped safe: ${d.skippedSafe||0}`);}catch(e){setStatus("cleanupStatus","Worker trigger failed:\n"+(e.message||e));}}
 async function loadQueueStatus(){ if(!user)return; const snap=await getDocs(query(collection(db,"users",user.uid,"cleanupQueue"), limit(1000))); let q=0,p=0,c=0,er=0,sk=0; snap.forEach(d=>{const s=d.data().workerStatus||d.data().status||"queued"; if(s.includes("complete"))c++; else if(s.includes("processing"))p++; else if(s.includes("error"))er++; else if(s.includes("skipped"))sk++; else q++;}); setStatus("cleanupStatus",`Queue:\nQueued: ${q}\nProcessing: ${p}\nComplete: ${c}\nErrors: ${er}\nSkipped safe: ${sk}`);}
@@ -101,8 +107,8 @@ function bind(){
  $("firebaseLoginBtn").onclick=firebaseLogin; $("logoutBtn").onclick=()=>signOut(auth); $("connectRenderGmailBtn").onclick=connectRenderGmail; $("checkWorkerBtn").onclick=checkWorker;
  $("startServerScanBtn").onclick=startServerScan; $("pauseServerScanBtn").onclick=pauseServerScan; $("resetServerScanBtn").onclick=resetServerScan; $("refreshBtn").onclick=refreshDashboard;
  $("speedSafeBtn").onclick=()=>setSpeed("safe"); $("speedFastBtn").onclick=()=>setSpeed("fast"); $("speedMaxBtn").onclick=()=>setSpeed("max");
- $("selectCleanupBtn").onclick=()=>{Object.values(senders).forEach(s=>{if(s.bucket==="cleanup")selected.add(s.key)});renderSenders();}; $("clearSelectedBtn").onclick=()=>{selected.clear();renderSenders();};
- $("saveQueueBtn").onclick=saveQueue; $("triggerWorkerBtn").onclick=triggerWorker; $("queueStatusBtn").onclick=loadQueueStatus;
+ $("rescoreBtn").onclick=rescoreSenders; $("selectCleanupBtn").onclick=()=>{Object.values(senders).forEach(s=>{if(s.bucket==="cleanup")selected.add(s.key)});renderSenders();}; $("selectHighBtn").onclick=()=>{Object.values(senders).forEach(s=>{if(s.bucket==="cleanup"&&(s.confidence==="high"||Number(s.cleanupScore||0)>=70))selected.add(s.key)});renderSenders();}; $("clearSelectedBtn").onclick=()=>{selected.clear();renderSenders();};
+ $("queueUnsubTrashBtn").onclick=()=>queueAction("unsubscribe_and_trash"); $("queueTrashBtn").onclick=()=>queueAction("trash_only"); $("queueUnsubOnlyBtn").onclick=()=>queueAction("unsubscribe_only"); $("triggerWorkerBtn").onclick=triggerWorker; $("queueStatusBtn").onclick=loadQueueStatus;
 }
 onAuthStateChanged(auth, async u=>{ user=u; if(user) await setDoc(doc(db,"users",user.uid),{email:user.email,updatedAt:new Date().toISOString()},{merge:true}); updateAuth(); await refreshDashboard(); });
 bind(); handleRedirectResult(); updateAuth(); checkWorker(); setInterval(refreshDashboard,10000);

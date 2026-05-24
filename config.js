@@ -1,5 +1,5 @@
 window.CLEANSATE_CONFIG = {
-  APP_VERSION: "CleanSlate Speed + Percent Final",
+  APP_VERSION: "CleanSlate Final Pro V2",
   FIREBASE: {
     apiKey: "AIzaSyDlY_ZKDAbTCAvLwJksuQ03vMUN6TNGgd4",
     authDomain: "cleanslate-c9be5.firebaseapp.com",

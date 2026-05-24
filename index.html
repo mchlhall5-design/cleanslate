@@ -4,15 +4,15 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
   <title>CleanSlate Pro</title>
-  <link rel="stylesheet" href="styles.css?v=fixscroll999"/>
-  <script src="config.js?v=fixscroll999"></script>
+  <link rel="stylesheet" href="styles.css?v=finalpro2"/>
+  <script src="config.js?v=finalpro2"></script>
 </head>
 <body>
 <main class="app">
   <section class="hero">
     <div class="logo">CS</div>
     <div>
-      <p class="eyebrow">CleanSlate Pro</p>
+      <p class="eyebrow">CleanSlate Final Pro</p>
       <h1>Background Gmail Scanner</h1>
       <p class="sub">Render scans, finds senders, unsubscribes, and deletes in the background.</p>
     </div>
@@ -65,9 +65,13 @@
   <section class="panel">
     <h2>4. Sender Review / Cleanup</h2>
     <div class="toolbar">
+      <button id="rescoreBtn" class="primary alt">Re-score Senders</button>
       <button id="selectCleanupBtn" class="primary">Select Cleanup Senders</button>
+      <button id="selectHighBtn" class="warning">Select High Score</button>
       <button id="clearSelectedBtn" class="ghost">Clear Selected</button>
-      <button id="saveQueueBtn" class="warning">Queue Selected For Background Cleanup</button>
+      <button id="queueUnsubTrashBtn" class="danger">Unsubscribe + Trash</button>
+      <button id="queueTrashBtn" class="warning">Trash Only</button>
+      <button id="queueUnsubOnlyBtn" class="primary">Unsubscribe Only</button>
     </div>
     <div class="miniCards">
       <div><b id="selectedCount">0</b><span>Selected</span></div>
@@ -84,6 +88,6 @@
     <div id="cleanupStatus" class="status">Worker status will show here.</div>
   </section>
 </main>
-<script type="module" src="app.js?v=fixscroll999"></script>
+<script type="module" src="app.js?v=finalpro2"></script>
 </body>
 </html>
